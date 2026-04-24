@@ -1,3 +1,4 @@
+pub mod access;
 pub mod capability;
 pub mod entity;
 pub mod enums;

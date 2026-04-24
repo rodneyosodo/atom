@@ -7,12 +7,7 @@ use tower_http::{
     trace::TraceLayer,
 };
 
-use crate::{
-    authz::handlers as authz,
-    identity::handlers as identity,
-    keys,
-    state::AppState,
-};
+use crate::{authz::handlers as authz, identity::handlers as identity, keys, state::AppState};
 
 pub fn create_router(state: AppState) -> Router {
     let cors = CorsLayer::new()
@@ -31,7 +26,16 @@ pub fn create_router(state: AppState) -> Router {
         .route("/auth/sessions/:id", get(identity::get_session))
         .route("/auth/keys/rotate", post(keys::rotate_keys))
         // Entities
-        .route("/entities", get(identity::list_entities).post(identity::create_entity))
+        .route(
+            "/entities",
+            get(identity::list_entities).post(identity::create_entity),
+        )
+        .route("/entities/:id/access", get(authz::entity_access))
+        .route(
+            "/entities/:id/effective-capabilities",
+            get(authz::effective_capabilities),
+        )
+        .route("/entities/:id/audit", get(authz::entity_audit_logs))
         .route(
             "/entities/:id",
             get(identity::get_entity)
@@ -47,10 +51,7 @@ pub fn create_router(state: AppState) -> Router {
             "/entities/:id/credentials/api-keys",
             post(identity::create_api_key),
         )
-        .route(
-            "/entities/:id/credentials",
-            get(identity::list_credentials),
-        )
+        .route("/entities/:id/credentials", get(identity::list_credentials))
         .route(
             "/entities/:entity_id/credentials/:cred_id",
             delete(identity::revoke_credential),
@@ -67,11 +68,15 @@ pub fn create_router(state: AppState) -> Router {
             delete(identity::remove_ownership),
         )
         // Groups
-        .route("/groups", get(identity::list_groups).post(identity::create_group))
+        .route(
+            "/groups",
+            get(identity::list_groups).post(identity::create_group),
+        )
         .route(
             "/groups/:id",
             get(identity::get_group).delete(identity::delete_group),
         )
+        .route("/groups/:id/access", get(authz::group_access))
         .route(
             "/groups/:id/members",
             get(identity::list_group_members).post(identity::add_group_member),
@@ -81,19 +86,24 @@ pub fn create_router(state: AppState) -> Router {
             delete(identity::remove_group_member),
         )
         // Resources
-        .route("/resources", get(authz::list_resources).post(authz::create_resource))
+        .route(
+            "/resources",
+            get(authz::list_resources).post(authz::create_resource),
+        )
         .route(
             "/resources/:id",
             get(authz::get_resource)
                 .put(authz::update_resource)
                 .delete(authz::delete_resource),
         )
+        .route("/resources/:id/access", get(authz::resource_access))
         // Roles
         .route("/roles", get(authz::list_roles).post(authz::create_role))
         .route(
             "/roles/:id",
             get(authz::get_role).delete(authz::delete_role),
         )
+        .route("/roles/:id/holders", get(authz::role_holders))
         .route(
             "/roles/:id/capabilities",
             get(authz::get_role_capabilities).post(authz::add_role_capability),
@@ -122,6 +132,20 @@ pub fn create_router(state: AppState) -> Router {
         )
         // Authorization check (PDP)
         .route("/authz/check", post(authz::check))
+        .route("/authz/check/bulk", post(authz::bulk_check))
+        .route("/authz/explain", post(authz::explain))
+        // Audit
+        .route("/audit", get(authz::audit_logs))
+        // Admin hygiene
+        .route("/admin/orphan-policies", get(authz::orphan_policies))
+        .route(
+            "/admin/unprotected-resources",
+            get(authz::unprotected_resources),
+        )
+        .route(
+            "/admin/expiring-credentials",
+            get(authz::expiring_credentials),
+        )
         .with_state(state)
         .layer(TraceLayer::new_for_http())
         .layer(cors)

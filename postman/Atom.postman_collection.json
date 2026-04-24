@@ -1305,7 +1305,380 @@
       ]
     },
     {
-      "name": "06 Admin Hygiene",
+      "name": "06 Query & Search",
+      "item": [
+        {
+          "name": "Authz Explain Device Publish Channel",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"subject_id\": \"{{device_id}}\",\n  \"action\": \"publish\",\n  \"resource_id\": \"{{channel_id}}\",\n  \"context\": {}\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/authz/explain",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "authz",
+                "explain"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('explain returns decision trail', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json()).to.have.property('evaluated_bindings');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Authz Bulk Check Device Channel",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"subject_id\": \"{{device_id}}\",\n  \"resource_id\": \"{{channel_id}}\",\n  \"actions\": [\"read\", \"publish\", \"delete\", \"manage\"],\n  \"context\": {}\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/authz/check/bulk",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "authz",
+                "check",
+                "bulk"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('bulk check returns action map', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().results).to.have.property('publish');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Entity Access",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/entities/{{device_id}}/access?resource_kind=channel&limit=20&offset=0",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "entities",
+                "%7B%7Bdevice_id%7D%7D",
+                "access"
+              ],
+              "query": [
+                {
+                  "key": "resource_kind",
+                  "value": "channel"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('entity access listed', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().items).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Resource Access",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/resources/{{channel_id}}/access?action=publish&limit=20&offset=0",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "resources",
+                "%7B%7Bchannel_id%7D%7D",
+                "access"
+              ],
+              "query": [
+                {
+                  "key": "action",
+                  "value": "publish"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('resource access listed', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().items).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Group Access",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/groups/{{group_id}}/access?limit=20&offset=0",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "groups",
+                "%7B%7Bgroup_id%7D%7D",
+                "access"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "20"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('group access listed', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().items).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Entity Effective Capabilities",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/entities/{{device_id}}/effective-capabilities",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "entities",
+                "%7B%7Bdevice_id%7D%7D",
+                "effective-capabilities"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('effective capabilities listed', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().capabilities).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Role Holders",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/roles/{{publisher_role_id}}/holders?limit=20&offset=0",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "roles",
+                "%7B%7Bpublisher_role_id%7D%7D",
+                "holders"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "20"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('role holders listed', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().items).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Audit Logs",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/audit?event=authz.check&limit=50&offset=0",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "audit"
+              ],
+              "query": [
+                {
+                  "key": "event",
+                  "value": "authz.check"
+                },
+                {
+                  "key": "limit",
+                  "value": "50"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('audit logs listed', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().items).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Entity Audit Logs",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/entities/{{device_id}}/audit?limit=50&offset=0",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "entities",
+                "%7B%7Bdevice_id%7D%7D",
+                "audit"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('entity audit logs listed', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().items).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "07 Admin Hygiene",
       "item": [
         {
           "name": "List Policies For Device",
@@ -1346,6 +1719,130 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('device policies listed', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().items).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Admin Orphan Policies",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/admin/orphan-policies?limit=50&offset=0",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "orphan-policies"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('orphan policies listed', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().items).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Admin Unprotected Resources",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/admin/unprotected-resources?limit=50&offset=0",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "unprotected-resources"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('unprotected resources listed', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().items).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Admin Expiring Credentials",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/admin/expiring-credentials?days=30&limit=50&offset=0",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "expiring-credentials"
+              ],
+              "query": [
+                {
+                  "key": "days",
+                  "value": "30"
+                },
+                {
+                  "key": "limit",
+                  "value": "50"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('expiring credentials listed', function () {",
                   "  pm.response.to.have.status(200);",
                   "  pm.expect(pm.response.json().items).to.be.an('array');",
                   "});"

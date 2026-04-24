@@ -120,8 +120,7 @@ pub async fn update_entity(
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateEntity>,
 ) -> Result<impl IntoResponse, AppError> {
-    let entity =
-        repo::update_entity(&state.pool, id, req.name, req.status, req.attributes).await?;
+    let entity = repo::update_entity(&state.pool, id, req.name, req.status, req.attributes).await?;
     Ok(Json(entity))
 }
 

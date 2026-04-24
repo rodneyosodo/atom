@@ -71,15 +71,14 @@ async fn do_login_password(
 ) -> Result<LoginResponse, AppError> {
     use sqlx::Row;
 
-    let entity_row =
-        sqlx::query("SELECT id, tenant_id, status FROM entities WHERE name = $1")
-            .bind(identifier)
-            .fetch_one(pool)
-            .await
-            .map_err(|e| match e {
-                sqlx::Error::RowNotFound => AppError::unauthorized("invalid credentials"),
-                other => AppError::Database(other),
-            })?;
+    let entity_row = sqlx::query("SELECT id, tenant_id, status FROM entities WHERE name = $1")
+        .bind(identifier)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| match e {
+            sqlx::Error::RowNotFound => AppError::unauthorized("invalid credentials"),
+            other => AppError::Database(other),
+        })?;
 
     let entity_id: Uuid = entity_row.try_get("id").map_err(db_err)?;
     let tenant_id: Option<Uuid> = entity_row.try_get("tenant_id").unwrap_or(None);
@@ -111,7 +110,13 @@ async fn do_login_password(
     }
 
     let session = super::repo::create_session(pool, entity_id, cfg.jwt_expiry_secs).await?;
-    let token = encode_jwt(entity_id, session.id, tenant_id, primary_key, cfg.jwt_expiry_secs)?;
+    let token = encode_jwt(
+        entity_id,
+        session.id,
+        tenant_id,
+        primary_key,
+        cfg.jwt_expiry_secs,
+    )?;
 
     Ok(LoginResponse {
         token,
@@ -121,7 +126,11 @@ async fn do_login_password(
     })
 }
 
-pub async fn create_password(pool: &PgPool, entity_id: Uuid, password: &str) -> Result<(), AppError> {
+pub async fn create_password(
+    pool: &PgPool,
+    entity_id: Uuid,
+    password: &str,
+) -> Result<(), AppError> {
     let hash = hash_secret(password.as_bytes())?;
     let id = Uuid::new_v4();
 
@@ -181,15 +190,13 @@ pub async fn revoke_credential(
     entity_id: Uuid,
     cred_id: Uuid,
 ) -> Result<(), AppError> {
-    let result = sqlx::query(
-        "UPDATE credentials SET status = $3 WHERE id = $1 AND entity_id = $2",
-    )
-    .bind(cred_id)
-    .bind(entity_id)
-    .bind(CredentialStatus::Revoked)
-    .execute(pool)
-    .await
-    .map_err(db_err)?;
+    let result = sqlx::query("UPDATE credentials SET status = $3 WHERE id = $1 AND entity_id = $2")
+        .bind(cred_id)
+        .bind(entity_id)
+        .bind(CredentialStatus::Revoked)
+        .execute(pool)
+        .await
+        .map_err(db_err)?;
     if result.rows_affected() == 0 {
         return Err(AppError::not_found("credential not found"));
     }

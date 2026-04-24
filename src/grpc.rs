@@ -3,7 +3,9 @@ use std::net::SocketAddr;
 use tonic::{transport::Server, Request, Response, Status};
 use uuid::Uuid;
 
-use crate::{auth::authenticate_token, authz::engine, models::policy::AuthzRequest, state::AppState};
+use crate::{
+    auth::authenticate_token, authz::engine, models::policy::AuthzRequest, state::AppState,
+};
 
 // Generated code from proto/atom.proto
 pub mod proto {
@@ -24,7 +26,10 @@ struct AtomAuthz {
 
 #[tonic::async_trait]
 impl AuthzService for AtomAuthz {
-    async fn check(&self, request: Request<CheckRequest>) -> Result<Response<CheckResponse>, Status> {
+    async fn check(
+        &self,
+        request: Request<CheckRequest>,
+    ) -> Result<Response<CheckResponse>, Status> {
         let req = request.into_inner();
 
         let subject_id = Uuid::parse_str(&req.subject_id)
@@ -88,7 +93,9 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
     tracing::info!("grpc listening on {addr}");
 
     Server::builder()
-        .add_service(AuthzServiceServer::new(AtomAuthz { state: state.clone() }))
+        .add_service(AuthzServiceServer::new(AtomAuthz {
+            state: state.clone(),
+        }))
         .add_service(AuthServiceServer::new(AtomAuth { state }))
         .serve(addr)
         .await?;

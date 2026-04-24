@@ -23,8 +23,7 @@ impl Config {
             database_url: std::env::var("DATABASE_URL").context("DATABASE_URL must be set")?,
             listen_addr: std::env::var("LISTEN_ADDR")
                 .unwrap_or_else(|_| "0.0.0.0:8080".to_string()),
-            grpc_addr: std::env::var("GRPC_ADDR")
-                .unwrap_or_else(|_| "0.0.0.0:8081".to_string()),
+            grpc_addr: std::env::var("GRPC_ADDR").unwrap_or_else(|_| "0.0.0.0:8081".to_string()),
             jwt_expiry_secs: std::env::var("JWT_EXPIRY_SECS")
                 .unwrap_or_else(|_| "3600".to_string())
                 .parse()

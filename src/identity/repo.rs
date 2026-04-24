@@ -168,13 +168,12 @@ pub async fn get_session(pool: &PgPool, id: Uuid) -> Result<Session, AppError> {
 }
 
 pub async fn revoke_session(pool: &PgPool, id: Uuid) -> Result<(), AppError> {
-    let result = sqlx::query(
-        "UPDATE sessions SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL",
-    )
-    .bind(id)
-    .execute(pool)
-    .await
-    .map_err(db_err)?;
+    let result =
+        sqlx::query("UPDATE sessions SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL")
+            .bind(id)
+            .execute(pool)
+            .await
+            .map_err(db_err)?;
     if result.rows_affected() == 0 {
         return Err(AppError::not_found(format!(
             "session {id} not found or already revoked"
@@ -232,12 +231,13 @@ pub async fn list_groups(pool: &PgPool, params: ListGroups) -> Result<GroupList,
     .await
     .map_err(db_err)?;
 
-    let total: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM groups WHERE ($1::uuid IS NULL OR tenant_id = $1)")
-            .bind(params.tenant_id)
-            .fetch_one(pool)
-            .await
-            .map_err(db_err)?;
+    let total: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM groups WHERE ($1::uuid IS NULL OR tenant_id = $1)",
+    )
+    .bind(params.tenant_id)
+    .fetch_one(pool)
+    .await
+    .map_err(db_err)?;
 
     Ok(GroupList { items, total })
 }
@@ -254,7 +254,11 @@ pub async fn delete_group(pool: &PgPool, id: Uuid) -> Result<(), AppError> {
     Ok(())
 }
 
-pub async fn add_group_member(pool: &PgPool, group_id: Uuid, entity_id: Uuid) -> Result<(), AppError> {
+pub async fn add_group_member(
+    pool: &PgPool,
+    group_id: Uuid,
+    entity_id: Uuid,
+) -> Result<(), AppError> {
     sqlx::query(
         "INSERT INTO group_members (group_id, entity_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
     )
@@ -266,7 +270,11 @@ pub async fn add_group_member(pool: &PgPool, group_id: Uuid, entity_id: Uuid) ->
     Ok(())
 }
 
-pub async fn remove_group_member(pool: &PgPool, group_id: Uuid, entity_id: Uuid) -> Result<(), AppError> {
+pub async fn remove_group_member(
+    pool: &PgPool,
+    group_id: Uuid,
+    entity_id: Uuid,
+) -> Result<(), AppError> {
     sqlx::query("DELETE FROM group_members WHERE group_id = $1 AND entity_id = $2")
         .bind(group_id)
         .bind(entity_id)
@@ -334,7 +342,11 @@ pub async fn list_owned(pool: &PgPool, owner_id: Uuid) -> Result<Vec<Entity>, Ap
     .map_err(db_err)
 }
 
-pub async fn delete_ownership(pool: &PgPool, owner_id: Uuid, owned_id: Uuid) -> Result<(), AppError> {
+pub async fn delete_ownership(
+    pool: &PgPool,
+    owner_id: Uuid,
+    owned_id: Uuid,
+) -> Result<(), AppError> {
     sqlx::query("DELETE FROM ownerships WHERE owner_id = $1 AND owned_id = $2")
         .bind(owner_id)
         .bind(owned_id)

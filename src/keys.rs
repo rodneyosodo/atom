@@ -121,7 +121,11 @@ fn coords_from_public_pem(pem: &str) -> Result<(String, String), AppError> {
     Ok((URL_SAFE_NO_PAD.encode(x), URL_SAFE_NO_PAD.encode(y)))
 }
 
-fn load_key_row(kid: String, public_pem: String, private_pem: String) -> Result<LoadedKey, AppError> {
+fn load_key_row(
+    kid: String,
+    public_pem: String,
+    private_pem: String,
+) -> Result<LoadedKey, AppError> {
     let (x_b64, y_b64) = coords_from_public_pem(&public_pem)?;
     Ok(LoadedKey {
         kid,

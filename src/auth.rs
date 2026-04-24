@@ -4,7 +4,9 @@ use axum::{
     http::{header, request::Parts},
 };
 use chrono::Utc;
-use jsonwebtoken::{decode, decode_header, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{
+    decode, decode_header, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation,
+};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;

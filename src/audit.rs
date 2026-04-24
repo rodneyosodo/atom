@@ -4,7 +4,13 @@ use uuid::Uuid;
 
 use crate::models::enums::AuditOutcome;
 
-pub async fn write(pool: &PgPool, entity_id: Option<Uuid>, event: &str, outcome: AuditOutcome, details: Value) {
+pub async fn write(
+    pool: &PgPool,
+    entity_id: Option<Uuid>,
+    event: &str,
+    outcome: AuditOutcome,
+    details: Value,
+) {
     let result = sqlx::query(
         "INSERT INTO audit_logs (id, entity_id, event, outcome, details) VALUES ($1, $2, $3, $4, $5)",
     )
