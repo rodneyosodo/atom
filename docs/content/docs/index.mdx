@@ -1,0 +1,38 @@
+---
+title: Overview
+description: Atom is a lightweight Identity and Authorization service for IoT and cloud-native systems.
+---
+
+Atom is a single-binary replacement for Keycloak — an HTTP service that combines identity management and policy-based authorization in one deployable unit.
+
+Built for [Magistrala](https://github.com/absmach/magistrala), but generic enough for any cloud-native or edge system.
+
+## What it does
+
+| Concern | What Atom provides |
+|---|---|
+| **Identity** | CRUD for any principal type — humans, devices, services, workloads, applications. All are first-class _entities_. |
+| **Authentication** | Password login returning a JWT, long-lived API keys, session management with revocation. |
+| **Authorization** | Policy-based decision engine (PDP) supporting RBAC, ABAC, and hybrid policies evaluated at runtime. |
+| **Grouping** | Entities belong to groups; policies apply to groups. |
+| **Ownership** | Parent–child relationships between entities. |
+| **Multi-tenancy** | All resources are tenant-scoped. |
+
+## Core design principles
+
+**Entity-first** — everything is an entity. There is no special "user" class. Humans, devices, and services are all modeled identically and treated symmetrically by the authorization engine.
+
+**Online authorization** — tokens carry no embedded permissions. Every authorization decision calls the PDP at runtime. This means policy changes take effect immediately, without token reissuance.
+
+**Deny by default** — an explicit `DENY` policy binding overrides any `ALLOW`. No matching allow policy means denied.
+
+**Single binary** — one Go binary, one Postgres database. No sidecars, no service mesh required.
+
+## Where to start
+
+<Cards>
+  <Card title="Quickstart" href="/docs/quickstart" description="Get Atom running and make your first authorization check in under 5 minutes." />
+  <Card title="Architecture" href="/docs/architecture" description="Understand the system design and module structure." />
+  <Card title="Access Control" href="/docs/access-control" description="Learn RBAC, ABAC, and how policy evaluation works." />
+  <Card title="Authentication" href="/docs/authentication" description="JWT tokens, API keys, JWKS, and key rotation." />
+</Cards>

@@ -1,0 +1,125 @@
+---
+title: Policy Bindings
+description: Complete field reference for creating and managing policy bindings.
+---
+
+A policy binding is the atomic unit of authorization in Atom. It declares: *subject* is granted *permission* over *scope*, with *effect*, under *conditions*.
+
+## Endpoints
+
+```
+POST   /policies           Create a binding (RequireManage)
+GET    /policies           List bindings
+GET    /policies/:id       Get a binding
+DELETE /policies/:id       Delete a binding (RequireManage)
+```
+
+<Callout type="info">
+Creating and deleting policy bindings requires the `manage` capability with `scope_kind = all`. See [Self-Authorization](/docs/architecture#self-authorization).
+</Callout>
+
+## Request body
+
+```json
+{
+  "subject_kind": "entity",
+  "subject_id":   "uuid",
+  "grant_kind":   "role",
+  "grant_id":     "uuid",
+  "scope_kind":   "resource_kind",
+  "scope_ref":    "channel",
+  "effect":       "allow",
+  "conditions":   {}
+}
+```
+
+## Field reference
+
+### `subject_kind`
+
+| Value | Meaning |
+|---|---|
+| `entity` | The subject is a single entity identified by `subject_id` |
+| `group` | The subject is a group; all current members inherit this binding |
+
+### `subject_id`
+
+UUID of the entity or group.
+
+### `grant_kind`
+
+| Value | Meaning |
+|---|---|
+| `capability` | `grant_id` is a capability UUID |
+| `role` | `grant_id` is a role UUID (grants all capabilities in that role) |
+
+### `grant_id`
+
+UUID of the capability or role.
+
+### `scope_kind`
+
+| Value | `scope_ref` | Meaning |
+|---|---|---|
+| `all` | omit / null | Applies to every resource in the system |
+| `resource_kind` | kind name (e.g. `"channel"`) | Applies to all resources of that kind |
+| `resource` | resource UUID (as string) | Applies to exactly one resource |
+
+### `scope_ref`
+
+For `scope_kind = resource_kind`: the kind name string (e.g. `"channel"`, `"device"`).
+For `scope_kind = resource`: the resource UUID as a string.
+For `scope_kind = all`: omit or set to `null`.
+
+### `effect`
+
+| Value | Meaning |
+|---|---|
+| `allow` | Grants the permission (default) |
+| `deny` | Explicitly denies the permission; overrides all allow bindings |
+
+### `conditions`
+
+An object where keys are dot-path expressions into the evaluation context and values are the expected values. All entries must match (AND logic).
+
+```json
+{
+  "entity.attributes.env": "prod",
+  "resource.attributes.classification": "public",
+  "context.ip_trusted": "true"
+}
+```
+
+Dot-path segments: `entity.attributes.<key>`, `resource.attributes.<key>`, `context.<key>`.
+
+Omit or set to `{}` for no conditions.
+
+## List query parameters
+
+```
+GET /policies?subject_id=<uuid>&subject_kind=entity&limit=20&offset=0
+```
+
+| Parameter | Type | Default | Notes |
+|---|---|---|---|
+| `subject_id` | uuid | — | Filter by subject |
+| `subject_kind` | string | — | Filter by subject kind |
+| `limit` | int | 20 | 1–100 |
+| `offset` | int | 0 | |
+
+## Response format
+
+```json
+{
+  "id": "...",
+  "subject_kind": "entity",
+  "subject_id": "...",
+  "grant_kind": "role",
+  "grant_id": "...",
+  "scope_kind": "resource_kind",
+  "scope_ref": "channel",
+  "effect": "allow",
+  "conditions": {},
+  "created_at": "2025-01-01T00:00:00Z"
+}
+```

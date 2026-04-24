@@ -1,0 +1,35 @@
+---
+title: Authentication
+description: Token types, credential management, and how authentication works in Atom.
+---
+
+Atom supports two token types, both passed as a Bearer token in the `Authorization` header:
+
+```
+Authorization: Bearer <token>
+```
+
+| Token type | Format | Use case |
+|---|---|---|
+| JWT | `eyJ...` | Short-lived (default 1h), returned by `/auth/login` |
+| API key | `atom_...` | Long-lived, created per entity, optional expiry |
+
+## Public endpoints
+
+The following endpoints do not require authentication:
+
+```
+GET  /health
+POST /auth/login
+GET  /.well-known/jwks.json
+```
+
+All other endpoints require a valid Bearer token.
+
+## Sections
+
+<Cards>
+  <Card title="Credentials" href="/docs/authentication/credentials" description="Password and API key credential management." />
+  <Card title="JWT Tokens" href="/docs/authentication/jwt" description="Token claims, session binding, and verification." />
+  <Card title="JWKS & Key Rotation" href="/docs/authentication/jwks" description="ES256 signing keys, JWKS endpoint, and zero-downtime rotation." />
+</Cards>

@@ -1,0 +1,144 @@
+---
+title: JWKS & Key Rotation
+description: ES256 signing key management, the JWKS endpoint, and zero-downtime key rotation.
+---
+
+Atom signs JWTs using ES256 (ECDSA over P-256 with SHA-256) and publishes its public keys at a standard JWKS endpoint. This allows external services to verify tokens independently and enables zero-downtime key rotation.
+
+## Why ES256
+
+Atom uses asymmetric signing rather than HMAC-SHA256 (HS256) because:
+
+- **No shared secret** — external verifiers only need the public key, not the signing secret.
+- **Separation of concerns** — a service can verify *who issued* a token without being able to *forge* tokens.
+- **Standard ecosystem** — JWKS/ES256 is supported by every major JWT library and API gateway.
+
+## JWKS endpoint
+
+```
+GET /.well-known/jwks.json
+```
+
+No authentication required. Returns both the primary and standby public keys:
+
+```json
+{
+  "keys": [
+    {
+      "kty": "EC",
+      "crv": "P-256",
+      "x":   "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU",
+      "y":   "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0",
+      "kid": "550e8400-e29b-41d4-a716-446655440000",
+      "use": "sig",
+      "alg": "ES256"
+    },
+    {
+      "kty": "EC",
+      "crv": "P-256",
+      "x":   "...",
+      "y":   "...",
+      "kid": "previous-kid",
+      "use": "sig",
+      "alg": "ES256"
+    }
+  ]
+}
+```
+
+The response always includes both the `primary` (current signing key) and `standby` (previous key, still valid). Retired keys are never published.
+
+## Key lifecycle
+
+```
+                rotate
+primary ──────────────────▶ standby ──────────▶ retired
+   ▲                                              (not published,
+   │                                               not used)
+new key
+(generated on rotate)
+```
+
+At any point in time:
+- **Primary** — all new tokens are signed with this key's `kid`.
+- **Standby** — tokens issued before the last rotation are still valid under this key.
+- **Retired** — any rotation beyond the first promotes the old standby to retired. Retired keys are kept in the database for audit but removed from JWKS. Tokens referencing a retired `kid` are rejected.
+
+## Key rotation
+
+Rotation requires the `manage` capability with `scope = all`.
+
+```bash
+curl -X POST http://localhost:8080/auth/keys/rotate \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+The rotation is:
+1. **Transactional** — retire standby, demote primary to standby, insert new primary in a single DB transaction.
+2. **Instantaneous** — the in-process key store (`Arc<RwLock<ActiveKeys>>`) is updated immediately. All subsequent token signatures use the new primary key. No restart required.
+3. **Zero-downtime** — tokens signed with the old primary key remain valid under the standby key until they expire (default 1 hour). After one JWT TTL, the standby key covers no outstanding tokens.
+
+### Rotation sequence
+
+```
+Before rotation:
+  primary  = K2 (signing new tokens)
+  standby  = K1 (validating old tokens)
+
+POST /auth/keys/rotate
+
+After rotation:
+  primary  = K3 (new key, signing new tokens)
+  standby  = K2 (validating tokens issued before rotation)
+  retired  = K1 (no longer published, tokens invalid)
+```
+
+After one JWT TTL (default 1h), all outstanding tokens reference either K3 or K2. K1-signed tokens have expired and no tokens reference the retired key.
+
+## External verification
+
+To verify Atom JWTs in an external service, fetch the JWKS and cache the keys. Re-fetch when you encounter an unknown `kid`.
+
+### Node.js example (using `jose`)
+
+```ts
+import * as jose from 'jose';
+
+const JWKS = jose.createRemoteJWKSet(
+  new URL('http://localhost:8080/.well-known/jwks.json')
+);
+
+async function verifyToken(jwt: string) {
+  const { payload } = await jose.jwtVerify(jwt, JWKS, {
+    algorithms: ['ES256'],
+  });
+  return payload; // { sub, sid, tid, iat, exp }
+}
+```
+
+The `jose` library handles `kid` lookup, caching, and automatic re-fetch on unknown key IDs automatically.
+
+### Python example (using `python-jose`)
+
+```python
+from jose import jwt
+import httpx
+
+def get_jwks():
+    resp = httpx.get('http://localhost:8080/.well-known/jwks.json')
+    return resp.json()['keys']
+
+def verify_token(token: str) -> dict:
+    keys = get_jwks()
+    return jwt.decode(token, keys, algorithms=['ES256'])
+```
+
+<Callout type="warn">
+External JWT verification confirms the token signature and expiry, but does **not** check session revocation. For full authorization semantics — including revocation and policy evaluation — use `POST /authz/check`.
+</Callout>
+
+## Bootstrap
+
+On first boot, Atom automatically generates the initial primary ES256 key pair and stores it in the `signing_keys` table. No manual key material configuration is required.
+
+Private keys are stored as PKCS8 PEM in the database. In production deployments, encrypt the `private_key` column at rest or delegate key storage to a KMS and store only references.

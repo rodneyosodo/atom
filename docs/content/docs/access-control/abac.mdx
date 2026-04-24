@@ -1,0 +1,155 @@
+---
+title: ABAC
+description: Attribute-Based Access Control using conditions on policy bindings.
+---
+
+ABAC in Atom is layered on top of RBAC through **conditions** on a policy binding. A binding is only considered if all its conditions match the evaluation context.
+
+## Attributes
+
+Both entities and resources carry a `attributes` field — a free-form JSON object stored as JSONB in Postgres.
+
+```bash
+# Create an entity with attributes
+curl -X POST http://localhost:8080/entities \
+  -d '{
+    "kind": "service",
+    "name": "billing-api",
+    "attributes": {"department": "finance", "env": "prod"}
+  }'
+
+# Create a resource with attributes
+curl -X POST http://localhost:8080/resources \
+  -d '{
+    "kind": "secret",
+    "name": "stripe-key",
+    "attributes": {"env": "prod", "classification": "confidential"}
+  }'
+```
+
+## Conditions
+
+Conditions on a policy binding are a flat JSON object where:
+- **Keys** are dot-paths into the evaluation context.
+- **Values** are the expected string values.
+- **All conditions must match** (AND logic).
+
+```json
+{
+  "entity.attributes.department": "finance",
+  "resource.attributes.env": "prod",
+  "context.ip_trusted": "true"
+}
+```
+
+A binding with these conditions is only evaluated for requests where:
+- the entity has `attributes.department = "finance"`, AND
+- the resource has `attributes.env = "prod"`, AND
+- the check request includes `context.ip_trusted = "true"`.
+
+If any condition fails to match, the binding is skipped entirely — as if it did not exist.
+
+## Evaluation context
+
+The context object available during condition evaluation:
+
+```json
+{
+  "entity": {
+    "attributes": { ...entity.attributes... }
+  },
+  "resource": {
+    "attributes": { ...resource.attributes... }
+  },
+  "context": {
+    ...fields from the check request's "context" object...
+  }
+}
+```
+
+The `context` field comes from the caller's `POST /authz/check` request body:
+
+```json
+{
+  "subject_id":  "...",
+  "action":      "read",
+  "resource_id": "...",
+  "context": {
+    "ip_trusted": "true",
+    "request_id": "abc123"
+  }
+}
+```
+
+<Callout type="warn">
+Condition values are compared as JSON values (not just strings). `"true"` (string) and `true` (boolean) are different values. Keep your attribute values consistent in type.
+</Callout>
+
+## Examples
+
+### Environment-scoped access
+
+Allow `read` on `secret` resources only in production:
+
+```json
+{
+  "subject_kind": "entity",
+  "subject_id":   "<svc-id>",
+  "grant_kind":   "capability",
+  "grant_id":     "<read-cap-id>",
+  "scope_kind":   "resource_kind",
+  "scope_ref":    "secret",
+  "effect":       "allow",
+  "conditions": {
+    "resource.attributes.env": "prod"
+  }
+}
+```
+
+### IP-restricted access
+
+Only allow from trusted IPs (caller must pass `ip_trusted` in context):
+
+```json
+{
+  "conditions": {
+    "context.ip_trusted": "true"
+  }
+}
+```
+
+### Department + environment hybrid
+
+```json
+{
+  "conditions": {
+    "entity.attributes.department": "finance",
+    "resource.attributes.env": "prod"
+  }
+}
+```
+
+## Combining RBAC and ABAC
+
+Any policy binding can have conditions, including role-based ones:
+
+```json
+{
+  "subject_kind": "entity",
+  "subject_id":   "<device-id>",
+  "grant_kind":   "role",
+  "grant_id":     "<publisher-role-id>",
+  "scope_kind":   "resource_kind",
+  "scope_ref":    "channel",
+  "effect":       "allow",
+  "conditions": {
+    "resource.attributes.env": "prod"
+  }
+}
+```
+
+This grants the `publisher` role, but only for channels tagged `env=prod`.
+
+## No conditions
+
+An empty conditions object (`{}`) means no conditions — the binding always applies when scope and grant match. This is the default when `conditions` is omitted.

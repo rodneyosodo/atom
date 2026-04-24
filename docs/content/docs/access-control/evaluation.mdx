@@ -1,0 +1,155 @@
+---
+title: PDP Evaluation
+description: How the Policy Decision Point evaluates authorization requests.
+---
+
+The PDP (Policy Decision Point) is the core of Atom's authorization engine. Every `POST /authz/check` call goes through this algorithm.
+
+## Request format
+
+```json
+POST /authz/check
+{
+  "subject_id":  "uuid",
+  "action":      "publish",
+  "resource_id": "uuid",
+  "context":     {}
+}
+```
+
+Response:
+```json
+{"allowed": true,  "reason": "allowed"}
+{"allowed": false, "reason": "no matching allow policy"}
+{"allowed": false, "reason": "explicitly denied by policy <id>"}
+```
+
+## Evaluation algorithm
+
+```
+1. Load the entity identified by subject_id
+   → if not found:    DENY ("subject not found")
+   → if not active:   DENY ("subject is not active")
+
+2. Load the resource identified by resource_id
+   → if not found:    DENY ("resource not found")
+
+3. Find the capability matching the action name
+   → match by (name, resource_kind) — prefers kind-specific over NULL=all
+   → if not found:    DENY ("unknown action '<name>'")
+
+4. Load all policy_bindings for the entity:
+   - Direct:  subject_kind = 'entity' AND subject_id = entity_id
+   - Via group: subject_kind = 'group' AND subject_id IN entity's groups
+
+5. Batch-load all role capabilities for role-grant bindings
+   (single ANY($1::uuid[]) query, not per-binding)
+
+6. For each binding:
+   a. Does scope match the resource?        → skip if not
+   b. Does the grant cover the capability?  → skip if not
+   c. Do ABAC conditions match?             → skip if not
+
+   If matched and effect = DENY:  immediately return DENY
+   If matched and effect = ALLOW: set has_allow = true
+
+7. If has_allow:  return ALLOW
+   Otherwise:     return DENY ("no matching allow policy")
+```
+
+## Key rules
+
+### DENY overrides ALLOW
+
+An explicit deny binding stops evaluation immediately. This means:
+- You cannot have an "exception to a deny" — the deny always wins.
+- Use deny bindings sparingly: typically to block a specific entity that would otherwise inherit an allow through a group.
+
+### Default deny
+
+If no allow binding matches, the request is denied. There is no implicit allow.
+
+### Group inheritance
+
+Bindings on a group apply to every entity that is currently a member. Membership is evaluated live at request time — adding an entity to a group takes effect on the next check, with no token reissuance needed.
+
+### Scope matching
+
+| `scope_kind` | A binding matches if... |
+|---|---|
+| `all` | Always |
+| `resource_kind` | `scope_ref` equals the resource's `kind` |
+| `resource` | `scope_ref` equals the resource's `id` (as string) |
+
+### ABAC conditions
+
+All conditions must match (AND logic). A missing key in the evaluation context counts as a mismatch. An empty conditions object `{}` always matches.
+
+### Capability resolution
+
+When `grant_kind = role`, the engine checks whether the role contains the capability. Capability IDs for all relevant roles are batch-loaded before the loop to avoid N+1 database queries.
+
+When `grant_kind = capability`, the binding's `grant_id` is compared directly to the resolved capability ID.
+
+## Example decision traces
+
+### Trace 1: allowed via role
+
+Entity `e1` has a binding: role `r1` → scope `resource_kind = channel` → allow.
+Role `r1` contains capabilities: `[publish, subscribe]`.
+Request: action=`publish`, resource kind=`channel`.
+
+```
+Step 3: capability found (publish)
+Step 4: loaded binding [role=r1, scope=resource_kind:channel, allow]
+Step 6a: scope matches (resource is kind=channel) ✓
+Step 6b: role r1 contains publish ✓
+Step 6c: no conditions ✓
+Step 6: effect=allow → has_allow = true
+Step 7: ALLOW
+```
+
+### Trace 2: denied by explicit binding
+
+Entity `e2` is a member of group `g1` which has a role=`r1` allow binding. Entity `e2` also has a direct deny binding for role `r1`.
+
+```
+Step 6: binding [group g1, role=r1, allow]
+  6a ✓, 6b ✓, 6c ✓ → has_allow = true
+Step 6: binding [entity e2, role=r1, deny]
+  6a ✓, 6b ✓, 6c ✓ → effect=DENY → immediately return DENY
+```
+
+### Trace 3: no matching policy
+
+Entity `e3` has no policy bindings at all.
+
+```
+Step 4: loaded 0 bindings
+Step 6: (loop does not execute)
+Step 7: has_allow = false → DENY ("no matching allow policy")
+```
+
+### Trace 4: ABAC condition blocks match
+
+Entity `e4` has a binding: capability=`read`, scope=`resource_kind:secret`, conditions=`{"resource.attributes.env": "prod"}`, allow.
+Request resource has `attributes.env = "staging"`.
+
+```
+Step 6a: scope matches ✓
+Step 6b: grant matches ✓
+Step 6c: condition "resource.attributes.env" = "prod", actual = "staging" ✗ → skip
+Step 7: has_allow = false → DENY ("no matching allow policy")
+```
+
+## Performance
+
+The PDP executes between two and four database queries per check:
+
+1. Load entity (status + attributes)
+2. Load resource (kind + attributes)
+3. Find capability by name
+4. Load all policy bindings for the entity (including group memberships via subquery)
+5. *(if any role bindings)* Batch-load role capabilities with `ANY($1::uuid[])`
+
+There are no per-binding round-trips. Steps 4 and 5 are the only queries that scale with policy count, and both are single queries.

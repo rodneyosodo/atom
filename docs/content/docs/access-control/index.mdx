@@ -1,0 +1,58 @@
+---
+title: Access Control
+description: Atom's unified policy model supports RBAC, ABAC, and hybrid combinations.
+---
+
+Atom uses a single primitive — the **policy binding** — to express all authorization rules. RBAC and ABAC are not separate systems; they are two dimensions of the same binding.
+
+## Mental model
+
+Every authorization question has three parts:
+
+```
+Can subject S perform action A on resource R?
+```
+
+- **Subject** — an entity or group.
+- **Action** — a capability name (e.g. `publish`, `read`, `manage`).
+- **Resource** — a registered resource in the system.
+
+A policy binding answers this by associating a subject with a grant (capability or role), scoped to a set of resources, with an optional set of ABAC conditions.
+
+## The policy binding
+
+```
+PolicyBinding {
+  subject:    entity | group
+  grant:      capability | role
+  scope:      all | resource_kind | resource
+  effect:     allow | deny
+  conditions: { dot-path → expected-value, ... }
+}
+```
+
+This single structure covers:
+
+| Use case | How |
+|---|---|
+| RBAC | `grant_kind = role`, no conditions |
+| ABAC | `grant_kind = capability`, with conditions |
+| RBAC + ABAC | `grant_kind = role`, with conditions |
+| Explicit deny | `effect = deny` |
+
+## Evaluation rules
+
+1. **DENY overrides ALLOW** — if any matching binding has `effect = deny`, the request is denied regardless of allow bindings.
+2. **Default deny** — no matching allow binding means denied.
+3. **Group inheritance** — bindings on a group apply to all current group members.
+
+See [PDP Evaluation](/docs/access-control/evaluation) for the full algorithm.
+
+## Sections
+
+<Cards>
+  <Card title="RBAC" href="/docs/access-control/rbac" description="Roles, capabilities, and role-based policy bindings." />
+  <Card title="ABAC" href="/docs/access-control/abac" description="Attribute conditions layered on top of any binding." />
+  <Card title="Policy Bindings" href="/docs/access-control/policies" description="Complete field reference for policy bindings." />
+  <Card title="PDP Evaluation" href="/docs/access-control/evaluation" description="Step-by-step decision algorithm with examples." />
+</Cards>

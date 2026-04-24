@@ -1,0 +1,10 @@
+{
+  "title": "Atom",
+  "pages": [
+    "index",
+    "quickstart",
+    "architecture",
+    "access-control",
+    "authentication"
+  ]
+}

@@ -1,0 +1,75 @@
+---
+title: JWT Tokens
+description: JWT structure, claims, session binding, and verification in Atom.
+---
+
+Atom issues JWTs signed with ES256 (ECDSA P-256 + SHA-256). Tokens are short-lived (default 1 hour) and tied to a server-side session that can be revoked independently.
+
+## Claims
+
+```json
+{
+  "sub": "entity-uuid",
+  "sid": "session-uuid",
+  "tid": "tenant-uuid or null",
+  "iat": 1700000000,
+  "exp": 1700003600
+}
+```
+
+| Claim | Type | Description |
+|---|---|---|
+| `sub` | string (UUID) | The entity that authenticated |
+| `sid` | string (UUID) | The session row ID — used for revocation checks |
+| `tid` | string (UUID) or null | The entity's tenant, if any |
+| `iat` | number | Issued-at timestamp (Unix seconds) |
+| `exp` | number | Expiry timestamp (Unix seconds) |
+
+The JWT header also carries a `kid` (Key ID) that identifies which signing key to use for verification:
+
+```json
+{
+  "alg": "ES256",
+  "kid": "550e8400-e29b-41d4-a716-...",
+  "typ": "JWT"
+}
+```
+
+## Session binding
+
+Every JWT references a `session` row via the `sid` claim. On every token verification, Atom:
+
+1. Decodes the JWT and extracts `sid`.
+2. Looks up the session row.
+3. Checks that `revoked_at IS NULL` and `expires_at > now()`.
+
+This means:
+- **Logout is instant** — revoking the session immediately invalidates all tokens issued for that session, without waiting for JWT expiry.
+- **Status changes propagate** — suspending an entity's session revokes the token; there is no window where a suspended entity holds a valid token beyond the check period.
+
+## Expiry
+
+Default TTL is 3600 seconds (1 hour), configurable via `JWT_EXPIRY_SECS`. For long-running services that need persistent access, use API keys instead.
+
+## Verification flow (Atom-internal)
+
+1. Extract `kid` from the JWT header.
+2. Look up the corresponding public key in the in-memory key store (`primary` or `standby`).
+3. Verify the ES256 signature.
+4. Validate `exp`.
+5. Query the `sessions` table to confirm the session is not revoked or expired.
+
+## External verification
+
+If your service holds a copy of Atom's public keys (fetched from `GET /.well-known/jwks.json`), it can verify the JWT signature locally without calling Atom. This proves:
+
+- The token was issued by Atom.
+- The token has not expired.
+
+It does **not** prove:
+- The session has not been revoked.
+- The entity is still active.
+
+For full authorization (including policy evaluation), always call `POST /authz/check`. External JWT verification is appropriate only for identity checks where revocation latency is acceptable.
+
+See [JWKS & Key Rotation](/docs/authentication/jwks) for details on external verification setup.

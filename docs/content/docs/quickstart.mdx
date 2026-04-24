@@ -1,0 +1,148 @@
+---
+title: Quickstart
+description: Get Atom running and make your first authorization check in five minutes.
+---
+
+## Prerequisites
+
+- Docker and Docker Compose
+- Rust toolchain (`cargo`)
+
+## Steps
+
+<Steps>
+<Step>
+
+### Start Postgres
+
+```bash
+docker-compose up postgres -d
+```
+
+</Step>
+<Step>
+
+### Configure environment
+
+```bash
+cp .env.example .env
+# Edit .env — set ADMIN_SECRET to bootstrap the admin password
+```
+
+Minimum required variables:
+
+| Variable | Description |
+|---|---|
+| `DATABASE_URL` | Postgres connection string |
+| `ADMIN_SECRET` | Initial password for the `atom-admin` entity (first boot only) |
+
+</Step>
+<Step>
+
+### Run Atom
+
+```bash
+cargo run
+```
+
+Migrations apply automatically on startup. On first boot, the admin entity is seeded and the initial ES256 signing key is generated.
+
+```
+INFO atom: migrations applied
+INFO atom: generated initial signing key kid=...
+INFO atom: admin password bootstrapped
+INFO atom: atom listening on 0.0.0.0:8080
+```
+
+</Step>
+<Step>
+
+### Log in as admin
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8080/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"identifier": "atom-admin", "secret": "your-admin-secret"}' \
+  | jq -r .token)
+```
+
+</Step>
+<Step>
+
+### Create an entity
+
+```bash
+DEVICE_ID=$(curl -s -X POST http://localhost:8080/entities \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"kind": "device", "name": "sensor-01"}' \
+  | jq -r .id)
+```
+
+</Step>
+<Step>
+
+### Create a resource and check authorization
+
+```bash
+# Register a resource
+CHANNEL_ID=$(curl -s -X POST http://localhost:8080/resources \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"kind": "channel", "name": "telemetry"}' \
+  | jq -r .id)
+
+# Find the publish capability ID
+PUB_CAP=$(curl -s http://localhost:8080/capabilities \
+  -H "Authorization: Bearer $TOKEN" \
+  | jq -r '.items[] | select(.name=="publish") | .id')
+
+# Create a role
+ROLE_ID=$(curl -s -X POST http://localhost:8080/roles \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "channel-publisher"}' | jq -r .id)
+
+# Assign capability to role
+curl -s -X POST http://localhost:8080/roles/$ROLE_ID/capabilities \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"capability_id\": \"$PUB_CAP\"}"
+
+# Bind role to device over all channels
+curl -s -X POST http://localhost:8080/policies \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"subject_kind\": \"entity\",
+    \"subject_id\":   \"$DEVICE_ID\",
+    \"grant_kind\":   \"role\",
+    \"grant_id\":     \"$ROLE_ID\",
+    \"scope_kind\":   \"resource_kind\",
+    \"scope_ref\":    \"channel\"
+  }"
+
+# Check authorization
+curl -s -X POST http://localhost:8080/authz/check \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"subject_id\":  \"$DEVICE_ID\",
+    \"action\":      \"publish\",
+    \"resource_id\": \"$CHANNEL_ID\"
+  }"
+# → {"allowed": true, "reason": "allowed"}
+```
+
+</Step>
+</Steps>
+
+## What just happened
+
+1. You created a `device` entity (`sensor-01`).
+2. You registered a `channel` resource (`telemetry`).
+3. You created a `channel-publisher` role bundling the `publish` capability.
+4. You bound that role to the device, scoped to all resources of kind `channel`.
+5. The PDP evaluated the check and found a matching allow policy.
+
+See [Access Control](/docs/access-control) for a full explanation of the policy model.
