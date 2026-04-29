@@ -58,9 +58,52 @@ pub enum GrantKind {
 #[sqlx(type_name = "text", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum ScopeKind {
-    All,
-    ResourceKind,
+    /// Top of the scope hierarchy. Matches every protected object and inherits
+    /// into every tenant for the same capability (full inheritance lands in M4).
+    Platform,
+    /// Inheritance into objects whose `tenant_id` matches `scope_ref`. The PDP
+    /// stub treats this as no-match until M3/M4 ship.
+    Tenant,
+    /// Matches every object whose coarse object kind equals `scope_ref`.
+    ObjectKind,
+    /// Matches every object whose namespaced sub-kind equals `scope_ref` (e.g.
+    /// `resource:channel` or `entity:device`).
+    ObjectType,
+    /// Matches a single object whose UUID (as text) equals `scope_ref`.
+    Object,
+}
+
+/// Canonical set of protected object kinds. Used for `object_kind` columns in
+/// policy scopes, guardrail rules, and authorization checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "text", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+pub enum ObjectKind {
+    Entity,
     Resource,
+    Group,
+    Tenant,
+    Role,
+    Policy,
+    Credential,
+    AuditLog,
+}
+
+impl ObjectKind {
+    /// Canonical string form (matches the DB CHECK constraint and the API
+    /// contract). `AuditLog` serialises as `audit_log`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ObjectKind::Entity => "entity",
+            ObjectKind::Resource => "resource",
+            ObjectKind::Group => "group",
+            ObjectKind::Tenant => "tenant",
+            ObjectKind::Role => "role",
+            ObjectKind::Policy => "policy",
+            ObjectKind::Credential => "credential",
+            ObjectKind::AuditLog => "audit_log",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]

@@ -248,9 +248,49 @@ pub async fn authenticate_token(state: &AppState, token: &str) -> Result<AuthCon
 
 // ─── Admin authorization ──────────────────────────────────────────────────────
 
-/// Returns true if `entity_id` holds an allow+scope=all binding covering `manage`.
-pub async fn has_global_manage(pool: &PgPool, entity_id: Uuid) -> Result<bool, AppError> {
-    sqlx::query_scalar(
+/// Scope an authorisation gate evaluates against. M4 introduces tenant and
+/// object-scoped gates so endpoints can check the protected object they mutate.
+#[derive(Debug, Clone, Copy)]
+pub enum Scope {
+    /// Platform layer (the top of the hierarchy). Matches a binding with
+    /// `scope_kind = 'platform'`.
+    Platform,
+    /// Tenant layer. Matches a binding with `scope_kind = 'tenant'` and
+    /// `scope_ref = <tenant>`, or a `platform` binding (which inherits).
+    Tenant(Uuid),
+    /// Exact object layer. Matches a binding with `scope_kind = 'object'` and
+    /// `scope_ref = <object>`, or a `platform` binding (which inherits).
+    Object(Uuid),
+}
+
+/// Returns true if `entity_id` holds an `allow` binding granting
+/// `capability_name` at the supplied scope. Direct entity bindings, group
+/// bindings, capability grants, and role grants (with the named capability in
+/// the role) are all considered.
+///
+/// `Scope::Platform` matches only platform-scope bindings.
+/// `Scope::Tenant(t)` matches tenant-scope bindings whose ref equals `t`, exact
+/// object grants do the same for `scope_kind = object`, and both inherit from
+/// platform-scope bindings for the same capability.
+pub async fn has_capability_in_scope(
+    pool: &PgPool,
+    entity_id: Uuid,
+    capability_name: &str,
+    scope: Scope,
+) -> Result<bool, AppError> {
+    let (scope_clause, scope_ref): (&str, Option<String>) = match scope {
+        Scope::Platform => ("pb.scope_kind = 'platform'", None),
+        Scope::Tenant(t) => (
+            "(pb.scope_kind = 'platform' OR (pb.scope_kind = 'tenant' AND pb.scope_ref = $3))",
+            Some(t.to_string()),
+        ),
+        Scope::Object(id) => (
+            "(pb.scope_kind = 'platform' OR (pb.scope_kind = 'object' AND pb.scope_ref = $3))",
+            Some(id.to_string()),
+        ),
+    };
+
+    let sql = format!(
         r#"SELECT EXISTS (
             SELECT 1
             FROM policy_bindings pb
@@ -261,23 +301,58 @@ pub async fn has_global_manage(pool: &PgPool, entity_id: Uuid) -> Result<bool, A
                 ))
             )
             AND pb.effect = 'allow'
-            AND pb.scope_kind = 'all'
+            AND {scope_clause}
             AND (
                 (pb.grant_kind = 'capability' AND pb.grant_id IN (
-                    SELECT id FROM capabilities WHERE name = 'manage'
+                    SELECT id FROM capabilities WHERE name = $2
                 ))
                 OR (pb.grant_kind = 'role' AND pb.grant_id IN (
                     SELECT rc.role_id FROM role_capabilities rc
                     JOIN capabilities c ON c.id = rc.capability_id
-                    WHERE c.name = 'manage'
+                    WHERE c.name = $2
                 ))
             )
-        )"#,
-    )
-    .bind(entity_id)
-    .fetch_one(pool)
-    .await
-    .map_err(db_err)
+        )"#
+    );
+
+    let mut q = sqlx::query_scalar(&sql)
+        .bind(entity_id)
+        .bind(capability_name);
+    if let Some(scope_ref) = scope_ref {
+        q = q.bind(scope_ref);
+    }
+    q.fetch_one(pool).await.map_err(db_err)
+}
+
+pub async fn has_capability_at_scope(
+    pool: &PgPool,
+    entity_id: Uuid,
+    capability_name: &str,
+    scope: Scope,
+) -> Result<bool, AppError> {
+    has_capability_in_scope(pool, entity_id, capability_name, scope).await
+}
+
+/// Convenience for the common platform-`manage` check used by the existing
+/// `RequireManage` extractor and admin hygiene endpoints.
+pub async fn has_global_manage(pool: &PgPool, entity_id: Uuid) -> Result<bool, AppError> {
+    has_capability_in_scope(pool, entity_id, "manage", Scope::Platform).await
+}
+
+/// Imperative gate: returns `Forbidden` if the entity does not hold the
+/// requested capability at the given scope. Use from handlers that need a
+/// finer check than `RequireManage`.
+pub async fn require_capability(
+    pool: &PgPool,
+    entity_id: Uuid,
+    capability_name: &str,
+    scope: Scope,
+) -> Result<(), AppError> {
+    if has_capability_in_scope(pool, entity_id, capability_name, scope).await? {
+        Ok(())
+    } else {
+        Err(AppError::Forbidden)
+    }
 }
 
 // ─── Axum extractors ──────────────────────────────────────────────────────────

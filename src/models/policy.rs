@@ -1,13 +1,16 @@
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
 use super::enums::{Effect, GrantKind, ScopeKind, SubjectKind};
+use crate::authz::compat::translate_legacy_scope;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct PolicyBinding {
     pub id: Uuid,
+    /// Tenant that owns the policy binding. `None` means platform/global policy.
+    pub tenant_id: Option<Uuid>,
     pub subject_kind: SubjectKind,
     pub subject_id: Uuid,
     pub grant_kind: GrantKind,
@@ -19,21 +22,254 @@ pub struct PolicyBinding {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Deserialize)]
+/// Request to create a policy binding.
+///
+/// Deserialization accepts the canonical post-M1 vocabulary
+/// (`platform` / `tenant` / `object_kind` / `object_type` / `object`)
+/// and the legacy form (`all` / `resource_kind` / `resource`). Legacy values
+/// are translated at the API edge — see [`crate::authz::compat`].
+#[derive(Debug)]
 pub struct CreatePolicyBinding {
+    /// Tenant that owns the binding. `None` means platform/global policy.
+    pub tenant_id: Option<Uuid>,
     pub subject_kind: SubjectKind,
     pub subject_id: Uuid,
     pub grant_kind: GrantKind,
     pub grant_id: Uuid,
     pub scope_kind: ScopeKind,
-    /// For scope_kind='resource' this is a resource UUID.
-    /// For scope_kind='resource_kind' this is the kind name.
-    /// For scope_kind='all' this is ignored.
+    /// Interpretation depends on `scope_kind`:
+    /// - `platform`: ignored.
+    /// - `tenant`: tenant UUID as text.
+    /// - `object_kind`: coarse kind name (e.g., `resource`, `entity`, `tenant`).
+    /// - `object_type`: namespaced sub-kind (e.g., `resource:channel`, `entity:device`).
+    /// - `object`: object UUID as text.
     pub scope_ref: Option<String>,
-    #[serde(default)]
     pub effect: Effect,
-    #[serde(default)]
     pub conditions: Value,
+}
+
+impl<'de> Deserialize<'de> for CreatePolicyBinding {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Raw {
+            #[serde(default)]
+            tenant_id: Option<Uuid>,
+            subject_kind: SubjectKind,
+            subject_id: Uuid,
+            grant_kind: GrantKind,
+            grant_id: Uuid,
+            scope_kind: String,
+            #[serde(default)]
+            scope_ref: Option<String>,
+            #[serde(default)]
+            effect: Effect,
+            #[serde(default)]
+            conditions: Value,
+        }
+
+        let raw = Raw::deserialize(deserializer)?;
+        let (canonical_kind, canonical_ref) =
+            translate_legacy_scope(&raw.scope_kind, raw.scope_ref);
+        let scope_kind: ScopeKind =
+            serde_json::from_value(serde_json::Value::String(canonical_kind.clone()))
+                .map_err(|_| {
+                    serde::de::Error::custom(format!(
+                        "invalid scope_kind '{canonical_kind}' (expected one of platform, tenant, object_kind, object_type, object)"
+                    ))
+                })?;
+
+        Ok(CreatePolicyBinding {
+            tenant_id: raw.tenant_id,
+            subject_kind: raw.subject_kind,
+            subject_id: raw.subject_id,
+            grant_kind: raw.grant_kind,
+            grant_id: raw.grant_id,
+            scope_kind,
+            scope_ref: canonical_ref,
+            effect: raw.effect,
+            conditions: raw.conditions,
+        })
+    }
+}
+
+impl CreatePolicyBinding {
+    /// Validate scope_kind/scope_ref consistency. Returns a human-readable
+    /// error suitable for an HTTP 400 body.
+    pub fn validate(&self) -> Result<(), String> {
+        match self.scope_kind {
+            ScopeKind::Platform => Ok(()),
+            ScopeKind::Tenant => match &self.scope_ref {
+                Some(r) => r
+                    .parse::<Uuid>()
+                    .map(|_| ())
+                    .map_err(|_| format!("tenant scope_ref must be a UUID, got '{r}'")),
+                None => Err("tenant scope requires scope_ref (tenant UUID)".to_string()),
+            },
+            ScopeKind::ObjectKind => match &self.scope_ref {
+                Some(_) => Ok(()),
+                None => Err("object_kind scope requires scope_ref (kind name)".to_string()),
+            },
+            ScopeKind::ObjectType => match &self.scope_ref {
+                Some(r) if r.contains(':') => Ok(()),
+                Some(r) => Err(format!(
+                    "object_type scope_ref must be namespaced as '<kind>:<sub-kind>' (e.g., 'resource:channel'), got '{r}'"
+                )),
+                None => Err("object_type scope requires scope_ref".to_string()),
+            },
+            ScopeKind::Object => match &self.scope_ref {
+                Some(_) => Ok(()),
+                None => Err("object scope requires scope_ref (object UUID)".to_string()),
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn parse(body: serde_json::Value) -> Result<CreatePolicyBinding, serde_json::Error> {
+        serde_json::from_value(body)
+    }
+
+    fn template(scope_kind: &str, scope_ref: Option<&str>) -> serde_json::Value {
+        let mut v = json!({
+            "subject_kind": "entity",
+            "subject_id": "11111111-1111-1111-1111-111111111111",
+            "grant_kind": "capability",
+            "grant_id": "22222222-2222-2222-2222-222222222222",
+            "scope_kind": scope_kind,
+        });
+        if let Some(r) = scope_ref {
+            v.as_object_mut()
+                .unwrap()
+                .insert("scope_ref".into(), json!(r));
+        }
+        v
+    }
+
+    #[test]
+    fn legacy_all_deserialises_to_platform() {
+        let req = parse(template("all", None)).expect("parse");
+        assert_eq!(req.scope_kind, ScopeKind::Platform);
+        assert_eq!(req.scope_ref, None);
+    }
+
+    #[test]
+    fn legacy_resource_kind_deserialises_to_object_type_with_prefix() {
+        let req = parse(template("resource_kind", Some("channel"))).expect("parse");
+        assert_eq!(req.scope_kind, ScopeKind::ObjectType);
+        assert_eq!(req.scope_ref.as_deref(), Some("resource:channel"));
+    }
+
+    #[test]
+    fn legacy_resource_deserialises_to_object() {
+        let uuid = "33333333-3333-3333-3333-333333333333";
+        let req = parse(template("resource", Some(uuid))).expect("parse");
+        assert_eq!(req.scope_kind, ScopeKind::Object);
+        assert_eq!(req.scope_ref.as_deref(), Some(uuid));
+    }
+
+    #[test]
+    fn unknown_scope_kind_fails_with_helpful_message() {
+        let err = parse(template("nonsense", None)).unwrap_err().to_string();
+        assert!(err.contains("invalid scope_kind"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_object_type_rejects_bare_value() {
+        let req = CreatePolicyBinding {
+            tenant_id: None,
+            subject_kind: SubjectKind::Entity,
+            subject_id: Uuid::new_v4(),
+            grant_kind: GrantKind::Capability,
+            grant_id: Uuid::new_v4(),
+            scope_kind: ScopeKind::ObjectType,
+            scope_ref: Some("channel".into()),
+            effect: Effect::Allow,
+            conditions: json!({}),
+        };
+        let err = req.validate().unwrap_err();
+        assert!(err.contains("namespaced"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_object_type_accepts_namespaced() {
+        let req = CreatePolicyBinding {
+            tenant_id: None,
+            subject_kind: SubjectKind::Entity,
+            subject_id: Uuid::new_v4(),
+            grant_kind: GrantKind::Capability,
+            grant_id: Uuid::new_v4(),
+            scope_kind: ScopeKind::ObjectType,
+            scope_ref: Some("resource:channel".into()),
+            effect: Effect::Allow,
+            conditions: json!({}),
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_tenant_requires_uuid_scope_ref() {
+        let bad = CreatePolicyBinding {
+            tenant_id: None,
+            subject_kind: SubjectKind::Entity,
+            subject_id: Uuid::new_v4(),
+            grant_kind: GrantKind::Capability,
+            grant_id: Uuid::new_v4(),
+            scope_kind: ScopeKind::Tenant,
+            scope_ref: Some("not-a-uuid".into()),
+            effect: Effect::Allow,
+            conditions: json!({}),
+        };
+        assert!(bad.validate().is_err());
+
+        let good = CreatePolicyBinding {
+            tenant_id: None,
+            subject_kind: SubjectKind::Entity,
+            subject_id: Uuid::new_v4(),
+            grant_kind: GrantKind::Capability,
+            grant_id: Uuid::new_v4(),
+            scope_kind: ScopeKind::Tenant,
+            scope_ref: Some(Uuid::new_v4().to_string()),
+            effect: Effect::Allow,
+            conditions: json!({}),
+        };
+        assert!(good.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_object_requires_scope_ref() {
+        let req = CreatePolicyBinding {
+            tenant_id: None,
+            subject_kind: SubjectKind::Entity,
+            subject_id: Uuid::new_v4(),
+            grant_kind: GrantKind::Capability,
+            grant_id: Uuid::new_v4(),
+            scope_kind: ScopeKind::Object,
+            scope_ref: None,
+            effect: Effect::Allow,
+            conditions: json!({}),
+        };
+        assert!(req.validate().is_err());
+    }
+
+    #[test]
+    fn validate_platform_ignores_scope_ref() {
+        let req = CreatePolicyBinding {
+            tenant_id: None,
+            subject_kind: SubjectKind::Entity,
+            subject_id: Uuid::new_v4(),
+            grant_kind: GrantKind::Capability,
+            grant_id: Uuid::new_v4(),
+            scope_kind: ScopeKind::Platform,
+            scope_ref: None,
+            effect: Effect::Allow,
+            conditions: json!({}),
+        };
+        assert!(req.validate().is_ok());
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,4 +321,35 @@ pub struct AuthzRequest {
 pub struct AuthzResponse {
     pub allowed: bool,
     pub reason: String,
+    /// Structured detail for explainability and audit. Populated for denials
+    /// caused by tenant lifecycle state (M3) and reserved for future
+    /// structured-reason additions. Omitted from JSON when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
+}
+
+impl AuthzResponse {
+    pub fn allow() -> Self {
+        Self {
+            allowed: true,
+            reason: "allowed".to_string(),
+            details: None,
+        }
+    }
+
+    pub fn deny<S: Into<String>>(reason: S) -> Self {
+        Self {
+            allowed: false,
+            reason: reason.into(),
+            details: None,
+        }
+    }
+
+    pub fn deny_with_details<S: Into<String>>(reason: S, details: Value) -> Self {
+        Self {
+            allowed: false,
+            reason: reason.into(),
+            details: Some(details),
+        }
+    }
 }

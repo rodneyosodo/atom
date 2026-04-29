@@ -44,18 +44,27 @@ pub async fn login_password(
 ) -> Result<LoginResponse, AppError> {
     let result = do_login_password(pool, cfg, primary_key, identifier, secret).await;
 
-    let (entity_id_opt, outcome) = match &result {
-        Ok(r) => (Some(r.entity_id), AuditOutcome::Allow),
-        Err(AppError::Unauthorized(_)) => (None, AuditOutcome::Deny),
+    let (entity_id_opt, tenant_id_opt, outcome) = match &result {
+        Ok(r) => {
+            let tenant_id = sqlx::query_scalar("SELECT tenant_id FROM entities WHERE id = $1")
+                .bind(r.entity_id)
+                .fetch_optional(pool)
+                .await
+                .ok()
+                .flatten();
+            (Some(r.entity_id), tenant_id, AuditOutcome::Allow)
+        }
+        Err(AppError::Unauthorized(_)) => (None, None, AuditOutcome::Deny),
         Err(_) => return result,
     };
 
     audit::write(
         pool,
         entity_id_opt,
+        tenant_id_opt,
         "auth.login",
         outcome,
-        serde_json::json!({"identifier": identifier}),
+        serde_json::json!({"identifier": identifier, "entity_id": entity_id_opt}),
     )
     .await;
 

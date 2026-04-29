@@ -1,17 +1,4 @@
-mod audit;
-mod auth;
-mod authz;
-mod config;
-mod db;
-mod error;
-mod grpc;
-mod identity;
-mod keys;
-mod models;
-mod routes;
-mod state;
-mod tenants;
-
+use atom::{config, db, grpc, identity, keys, routes, state};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 

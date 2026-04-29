@@ -259,6 +259,7 @@ pub async fn add_group_member(
     group_id: Uuid,
     entity_id: Uuid,
 ) -> Result<(), AppError> {
+    crate::guardrails::validate_group_member(pool, group_id, entity_id).await?;
     sqlx::query(
         "INSERT INTO group_members (group_id, entity_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
     )

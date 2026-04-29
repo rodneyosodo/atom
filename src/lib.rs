@@ -1,0 +1,20 @@
+//! Atom — identity and authorization service.
+//!
+//! Both the binary entry point (`src/main.rs`) and integration tests in
+//! `tests/` consume this crate as a library. Module visibility mirrors the
+//! historical `mod` layout from `main.rs`.
+
+pub mod audit;
+pub mod auth;
+pub mod authz;
+pub mod config;
+pub mod db;
+pub mod error;
+pub mod grpc;
+pub mod guardrails;
+pub mod identity;
+pub mod keys;
+pub mod models;
+pub mod routes;
+pub mod state;
+pub mod tenants;

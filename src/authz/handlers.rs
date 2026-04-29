@@ -4,12 +4,13 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use sqlx::PgPool;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
 use crate::{
     audit,
-    auth::{AuthContext, RequireManage},
+    auth::{has_capability_in_scope, require_capability, AuthContext, Scope},
     error::AppError,
     models::{
         access::{
@@ -18,7 +19,7 @@ use crate::{
             GroupAccessQuery, ResourceAccessQuery, RoleHoldersQuery, UnprotectedResourcesQuery,
         },
         capability::{CreateCapability, ListCapabilities},
-        enums::AuditOutcome,
+        enums::{AuditOutcome, ScopeKind},
         policy::{AuthzRequest, CreatePolicyBinding, ListPolicies},
         resource::{CreateResource, ListResources, UpdateResource},
         role::{AddRoleCapability, CreateRole, ListRoles},
@@ -28,13 +29,160 @@ use crate::{
 
 use super::{engine, repo};
 
+fn scope_for_tenant(tenant_id: Option<Uuid>) -> Scope {
+    match tenant_id {
+        Some(tenant_id) => Scope::Tenant(tenant_id),
+        None => Scope::Platform,
+    }
+}
+
+async fn require_management(
+    pool: &PgPool,
+    entity_id: Uuid,
+    capability_name: &str,
+    scope: Scope,
+) -> Result<(), AppError> {
+    require_capability(pool, entity_id, capability_name, scope).await
+}
+
+async fn validate_tenant_owned_policy(
+    pool: &PgPool,
+    req: &CreatePolicyBinding,
+) -> Result<(), AppError> {
+    let Some(policy_tenant_id) = req.tenant_id else {
+        return Ok(());
+    };
+
+    match req.scope_kind {
+        ScopeKind::Platform => Err(AppError::bad_request(
+            "tenant-owned policy cannot use platform scope",
+        )),
+        ScopeKind::Tenant => {
+            let Some(scope_ref) = req.scope_ref.as_deref() else {
+                return Err(AppError::bad_request(
+                    "tenant policy scope_ref must match tenant_id",
+                ));
+            };
+            let scope_tenant_id = scope_ref
+                .parse::<Uuid>()
+                .map_err(|_| AppError::bad_request("tenant scope_ref must be a UUID"))?;
+            if scope_tenant_id == policy_tenant_id {
+                Ok(())
+            } else {
+                Err(AppError::bad_request(
+                    "tenant-owned policy cannot reference another tenant",
+                ))
+            }
+        }
+        ScopeKind::ObjectKind | ScopeKind::ObjectType => Ok(()),
+        ScopeKind::Object => {
+            let scope_ref = req
+                .scope_ref
+                .as_deref()
+                .ok_or_else(|| AppError::bad_request("object scope requires scope_ref"))?;
+            let object_id = scope_ref
+                .parse::<Uuid>()
+                .map_err(|_| AppError::bad_request("object scope_ref must be a UUID"))?;
+            match repo::object_tenant_id_by_id(pool, object_id).await? {
+                Some(Some(object_tenant_id)) if object_tenant_id == policy_tenant_id => Ok(()),
+                Some(Some(_)) => Err(AppError::bad_request(
+                    "tenant-owned policy cannot reference an object in another tenant",
+                )),
+                Some(None) => Err(AppError::bad_request(
+                    "tenant-owned policy cannot reference a platform object",
+                )),
+                None => Err(AppError::bad_request(
+                    "tenant-owned policy cannot reference an unknown object",
+                )),
+            }
+        }
+    }
+}
+
+async fn authz_request_tenant_id(
+    pool: &PgPool,
+    req: &AuthzRequest,
+) -> Result<Option<Uuid>, AppError> {
+    if req.object_kind.as_deref() == Some("tenant") {
+        return Ok(req.object_id);
+    }
+
+    if let Some(resource_id) = req.resource_id {
+        return sqlx::query_scalar::<_, Option<Uuid>>(
+            "SELECT tenant_id FROM resources WHERE id = $1",
+        )
+        .bind(resource_id)
+        .fetch_optional(pool)
+        .await
+        .map(|value| value.flatten())
+        .map_err(crate::error::db_err);
+    }
+
+    match (req.object_kind.as_deref(), req.object_id) {
+        (Some("resource"), Some(id)) => {
+            sqlx::query_scalar::<_, Option<Uuid>>("SELECT tenant_id FROM resources WHERE id = $1")
+                .bind(id)
+                .fetch_optional(pool)
+                .await
+                .map(|value| value.flatten())
+                .map_err(crate::error::db_err)
+        }
+        (Some("entity"), Some(id)) => {
+            sqlx::query_scalar::<_, Option<Uuid>>("SELECT tenant_id FROM entities WHERE id = $1")
+                .bind(id)
+                .fetch_optional(pool)
+                .await
+                .map(|value| value.flatten())
+                .map_err(crate::error::db_err)
+        }
+        _ => Ok(None),
+    }
+}
+
+async fn audit_tenant_filter(
+    pool: &PgPool,
+    auth: &AuthContext,
+    requested_tenant_id: Option<Uuid>,
+) -> Result<Option<Vec<Uuid>>, AppError> {
+    if has_capability_in_scope(pool, auth.entity_id, "audit.read", Scope::Platform).await?
+        || has_capability_in_scope(pool, auth.entity_id, "manage", Scope::Platform).await?
+    {
+        return Ok(None);
+    }
+
+    let mut tenant_ids =
+        repo::tenant_ids_for_capability(pool, auth.entity_id, "audit.read").await?;
+    tenant_ids.sort_unstable();
+    tenant_ids.dedup();
+
+    if let Some(requested_tenant_id) = requested_tenant_id {
+        if tenant_ids.contains(&requested_tenant_id) {
+            return Ok(Some(vec![requested_tenant_id]));
+        }
+        return Err(AppError::Forbidden);
+    }
+
+    if tenant_ids.is_empty() {
+        Err(AppError::Forbidden)
+    } else {
+        Ok(Some(tenant_ids))
+    }
+}
+
 // ─── Resources ────────────────────────────────────────────────────────────────
 
 pub async fn create_resource(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Json(req): Json<CreateResource>,
 ) -> Result<impl IntoResponse, AppError> {
+    require_management(
+        &state.pool,
+        auth.entity_id,
+        "manage",
+        scope_for_tenant(req.tenant_id),
+    )
+    .await?;
     let resource = repo::create_resource(&state.pool, req).await?;
     Ok((StatusCode::CREATED, Json(resource)))
 }
@@ -69,19 +217,35 @@ pub async fn list_resources(
 
 pub async fn update_resource(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateResource>,
 ) -> Result<impl IntoResponse, AppError> {
+    let existing = repo::get_resource(&state.pool, id).await?;
+    require_management(
+        &state.pool,
+        auth.entity_id,
+        "manage",
+        scope_for_tenant(existing.tenant_id),
+    )
+    .await?;
     let resource = repo::update_resource(&state.pool, id, req).await?;
     Ok(Json(resource))
 }
 
 pub async fn delete_resource(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    let existing = repo::get_resource(&state.pool, id).await?;
+    require_management(
+        &state.pool,
+        auth.entity_id,
+        "manage",
+        scope_for_tenant(existing.tenant_id),
+    )
+    .await?;
     repo::delete_resource(&state.pool, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -90,9 +254,16 @@ pub async fn delete_resource(
 
 pub async fn create_role(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Json(req): Json<CreateRole>,
 ) -> Result<impl IntoResponse, AppError> {
+    require_management(
+        &state.pool,
+        auth.entity_id,
+        "role.manage",
+        scope_for_tenant(req.tenant_id),
+    )
+    .await?;
     let role = repo::create_role(&state.pool, req).await?;
     Ok((StatusCode::CREATED, Json(role)))
 }
@@ -117,28 +288,52 @@ pub async fn list_roles(
 
 pub async fn delete_role(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    let role = repo::get_role(&state.pool, id).await?;
+    require_management(
+        &state.pool,
+        auth.entity_id,
+        "role.manage",
+        scope_for_tenant(role.tenant_id),
+    )
+    .await?;
     repo::delete_role(&state.pool, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn add_role_capability(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(role_id): Path<Uuid>,
     Json(req): Json<AddRoleCapability>,
 ) -> Result<impl IntoResponse, AppError> {
+    let role = repo::get_role(&state.pool, role_id).await?;
+    require_management(
+        &state.pool,
+        auth.entity_id,
+        "role.manage",
+        scope_for_tenant(role.tenant_id),
+    )
+    .await?;
     repo::add_role_capability(&state.pool, role_id, req.capability_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn remove_role_capability(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path((role_id, cap_id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse, AppError> {
+    let role = repo::get_role(&state.pool, role_id).await?;
+    require_management(
+        &state.pool,
+        auth.entity_id,
+        "role.manage",
+        scope_for_tenant(role.tenant_id),
+    )
+    .await?;
     repo::remove_role_capability(&state.pool, role_id, cap_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -166,9 +361,16 @@ pub async fn role_holders(
 
 pub async fn create_capability(
     State(state): State<AppState>,
-    _auth: RequireManage,
+    auth: AuthContext,
     Json(req): Json<CreateCapability>,
 ) -> Result<impl IntoResponse, AppError> {
+    require_management(
+        &state.pool,
+        auth.entity_id,
+        "policy.manage",
+        Scope::Platform,
+    )
+    .await?;
     let cap = repo::create_capability(&state.pool, req).await?;
     Ok((StatusCode::CREATED, Json(cap)))
 }
@@ -193,9 +395,16 @@ pub async fn list_capabilities(
 
 pub async fn delete_capability(
     State(state): State<AppState>,
-    _auth: RequireManage,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    require_management(
+        &state.pool,
+        auth.entity_id,
+        "policy.manage",
+        Scope::Platform,
+    )
+    .await?;
     repo::delete_capability(&state.pool, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -204,9 +413,18 @@ pub async fn delete_capability(
 
 pub async fn create_policy(
     State(state): State<AppState>,
-    _auth: RequireManage,
+    auth: AuthContext,
     Json(req): Json<CreatePolicyBinding>,
 ) -> Result<impl IntoResponse, AppError> {
+    req.validate().map_err(AppError::bad_request)?;
+    validate_tenant_owned_policy(&state.pool, &req).await?;
+    require_management(
+        &state.pool,
+        auth.entity_id,
+        "policy.manage",
+        scope_for_tenant(req.tenant_id),
+    )
+    .await?;
     let policy = repo::create_policy(&state.pool, req).await?;
     Ok((StatusCode::CREATED, Json(policy)))
 }
@@ -231,9 +449,17 @@ pub async fn list_policies(
 
 pub async fn delete_policy(
     State(state): State<AppState>,
-    _auth: RequireManage,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    let policy = repo::get_policy(&state.pool, id).await?;
+    require_management(
+        &state.pool,
+        auth.entity_id,
+        "policy.manage",
+        scope_for_tenant(policy.tenant_id),
+    )
+    .await?;
     repo::delete_policy(&state.pool, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -245,24 +471,35 @@ pub async fn check(
     _auth: AuthContext,
     Json(req): Json<AuthzRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    let tenant_id = authz_request_tenant_id(&state.pool, &req).await?;
     let response = engine::evaluate(&state.pool, &req).await?;
+
+    let mut details = serde_json::json!({
+        "action": req.action,
+        "resource_id": req.resource_id,
+        "object_kind": req.object_kind,
+        "object_id": req.object_id,
+        "reason": response.reason,
+    });
+    // M3: merge structured details (e.g., tenant lifecycle state) into audit.
+    if let Some(extra) = response.details.as_ref().and_then(|v| v.as_object()) {
+        let map = details.as_object_mut().expect("json object");
+        for (k, v) in extra {
+            map.insert(k.clone(), v.clone());
+        }
+    }
 
     audit::write(
         &state.pool,
         Some(req.subject_id),
+        tenant_id,
         "authz.check",
         if response.allowed {
             AuditOutcome::Allow
         } else {
             AuditOutcome::Deny
         },
-        serde_json::json!({
-            "action": req.action,
-            "resource_id": req.resource_id,
-            "object_kind": req.object_kind,
-            "object_id": req.object_id,
-            "reason": response.reason,
-        }),
+        details,
     )
     .await;
 
@@ -274,24 +511,39 @@ pub async fn explain(
     _auth: AuthContext,
     Json(req): Json<AuthzRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    let tenant_id = authz_request_tenant_id(&state.pool, &req).await?;
     let response = engine::explain(&state.pool, &req).await?;
+
+    let mut details = serde_json::json!({
+        "action": req.action,
+        "resource_id": req.resource_id,
+        "object_kind": req.object_kind,
+        "object_id": req.object_id,
+        "reason": response.reason,
+    });
+    // M3: surface tenant-lifecycle reasons (e.g. "tenant is frozen") through
+    // explain audit too. Reason text already encodes state; we promote it to
+    // a structured field for filtering.
+    if response.reason.starts_with("tenant is ") {
+        if let Some(state_word) = response.reason.strip_prefix("tenant is ") {
+            details
+                .as_object_mut()
+                .expect("json object")
+                .insert("tenant_status".into(), serde_json::json!(state_word));
+        }
+    }
 
     audit::write(
         &state.pool,
         Some(req.subject_id),
+        tenant_id,
         "authz.explain",
         if response.allowed {
             AuditOutcome::Allow
         } else {
             AuditOutcome::Deny
         },
-        serde_json::json!({
-            "action": req.action,
-            "resource_id": req.resource_id,
-            "object_kind": req.object_kind,
-            "object_id": req.object_id,
-            "reason": response.reason,
-        }),
+        details,
     )
     .await;
 
@@ -331,6 +583,7 @@ pub async fn bulk_check(
         audit::write(
             &state.pool,
             Some(req.subject_id),
+            authz_request_tenant_id(&state.pool, &check_req).await?,
             "authz.check",
             if response.allowed {
                 AuditOutcome::Allow
@@ -392,47 +645,52 @@ pub async fn effective_capabilities(
 
 pub async fn audit_logs(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Query(params): Query<AuditQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    let logs = repo::audit_logs(&state.pool, params).await?;
+    let allowed_tenant_ids = audit_tenant_filter(&state.pool, &auth, params.tenant_id).await?;
+    let logs = repo::audit_logs(&state.pool, params, allowed_tenant_ids).await?;
     Ok(Json(logs))
 }
 
 pub async fn entity_audit_logs(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(entity_id): Path<Uuid>,
     Query(mut params): Query<AuditQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     params.entity_id = Some(entity_id);
-    let logs = repo::audit_logs(&state.pool, params).await?;
+    let allowed_tenant_ids = audit_tenant_filter(&state.pool, &auth, params.tenant_id).await?;
+    let logs = repo::audit_logs(&state.pool, params, allowed_tenant_ids).await?;
     Ok(Json(logs))
 }
 
 pub async fn orphan_policies(
     State(state): State<AppState>,
-    _auth: RequireManage,
+    auth: AuthContext,
     Query(params): Query<AdminPageQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    require_management(&state.pool, auth.entity_id, "manage", Scope::Platform).await?;
     let response = repo::orphan_policies(&state.pool, params).await?;
     Ok(Json(response))
 }
 
 pub async fn unprotected_resources(
     State(state): State<AppState>,
-    _auth: RequireManage,
+    auth: AuthContext,
     Query(params): Query<UnprotectedResourcesQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    require_management(&state.pool, auth.entity_id, "manage", Scope::Platform).await?;
     let response = repo::unprotected_resources(&state.pool, params).await?;
     Ok(Json(response))
 }
 
 pub async fn expiring_credentials(
     State(state): State<AppState>,
-    _auth: RequireManage,
+    auth: AuthContext,
     Query(params): Query<ExpiringCredentialsQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    require_management(&state.pool, auth.entity_id, "manage", Scope::Platform).await?;
     let response = repo::expiring_credentials(&state.pool, params).await?;
     Ok(Json(response))
 }

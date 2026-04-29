@@ -55,6 +55,54 @@
     {
       "key": "device_api_key",
       "value": ""
+    },
+    {
+      "key": "tenant_id",
+      "value": ""
+    },
+    {
+      "key": "entity_id",
+      "value": "{{device_id}}"
+    },
+    {
+      "key": "credential_id",
+      "value": "{{device_api_key_credential_id}}"
+    },
+    {
+      "key": "owned_id",
+      "value": "{{device_id}}"
+    },
+    {
+      "key": "group_id",
+      "value": ""
+    },
+    {
+      "key": "resource_id",
+      "value": "{{channel_id}}"
+    },
+    {
+      "key": "role_id",
+      "value": "{{publisher_role_id}}"
+    },
+    {
+      "key": "capability_id",
+      "value": "{{read_capability_id}}"
+    },
+    {
+      "key": "policy_id",
+      "value": ""
+    },
+    {
+      "key": "owner_id",
+      "value": "{{human_id}}"
+    },
+    {
+      "key": "member_entity_id",
+      "value": "{{device_id}}"
+    },
+    {
+      "key": "target_entity_id",
+      "value": "{{device_id}}"
     }
   ],
   "item": [
@@ -1902,6 +1950,1816 @@
                 "exec": [
                   "pm.test('admin logged out', function () { pm.response.to.have.status(204); });"
                 ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "08 Complete Endpoint Reference",
+      "item": [
+        {
+          "name": "Public",
+          "item": [
+            {
+              "name": "GET /.well-known/jwks.json",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/.well-known/jwks.json",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    ".well-known",
+                    "jwks.json"
+                  ]
+                },
+                "auth": {
+                  "type": "noauth"
+                }
+              }
+            },
+            {
+              "name": "GET /health",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/health",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "health"
+                  ]
+                },
+                "auth": {
+                  "type": "noauth"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Auth",
+          "item": [
+            {
+              "name": "POST /auth/login",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/auth/login",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "auth",
+                    "login"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"identifier\": \"{{admin_identifier}}\",\n  \"secret\": \"{{admin_secret}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "auth": {
+                  "type": "noauth"
+                }
+              }
+            },
+            {
+              "name": "POST /auth/logout",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/auth/logout",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "auth",
+                    "logout"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "GET /auth/sessions/:id",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/auth/sessions/{{admin_session_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "auth",
+                    "sessions",
+                    "{{admin_session_id}}"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "POST /auth/keys/rotate",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/auth/keys/rotate",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "auth",
+                    "keys",
+                    "rotate"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Entities",
+          "item": [
+            {
+              "name": "GET /entities",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/entities?tenant_id={{tenant_id}}&limit=20&offset=0",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "entities"
+                  ],
+                  "query": [
+                    {
+                      "key": "tenant_id",
+                      "value": "{{tenant_id}}"
+                    },
+                    {
+                      "key": "limit",
+                      "value": "20"
+                    },
+                    {
+                      "key": "offset",
+                      "value": "0"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "name": "POST /entities",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/entities",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "entities"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"kind\": \"device\",\n  \"name\": \"device-{{run_id}}\",\n  \"tenant_id\": null,\n  \"attributes\": {\n    \"source\": \"postman\"\n  }\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "GET /entities/:id",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/entities/{{entity_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "entities",
+                    "{{entity_id}}"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "PUT /entities/:id",
+              "request": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/entities/{{entity_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "entities",
+                    "{{entity_id}}"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"device-updated-{{run_id}}\",\n  \"status\": \"active\",\n  \"attributes\": {\n    \"updated_by\": \"postman\"\n  }\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "DELETE /entities/:id",
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/entities/{{entity_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "entities",
+                    "{{entity_id}}"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "GET /entities/:id/groups",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/entities/{{entity_id}}/groups",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "entities",
+                    "{{entity_id}}",
+                    "groups"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "GET /entities/:id/access",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/entities/{{entity_id}}/access?action=read&tenant_id={{tenant_id}}&resource_kind=channel&limit=20&offset=0",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "entities",
+                    "{{entity_id}}",
+                    "access"
+                  ],
+                  "query": [
+                    {
+                      "key": "action",
+                      "value": "read"
+                    },
+                    {
+                      "key": "tenant_id",
+                      "value": "{{tenant_id}}"
+                    },
+                    {
+                      "key": "resource_kind",
+                      "value": "channel"
+                    },
+                    {
+                      "key": "limit",
+                      "value": "20"
+                    },
+                    {
+                      "key": "offset",
+                      "value": "0"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "name": "GET /entities/:id/effective-capabilities",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/entities/{{entity_id}}/effective-capabilities?resource_kind=channel&tenant_id={{tenant_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "entities",
+                    "{{entity_id}}",
+                    "effective-capabilities"
+                  ],
+                  "query": [
+                    {
+                      "key": "resource_kind",
+                      "value": "channel"
+                    },
+                    {
+                      "key": "tenant_id",
+                      "value": "{{tenant_id}}"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "name": "GET /entities/:id/audit",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/entities/{{entity_id}}/audit?tenant_id={{tenant_id}}&limit=50&offset=0",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "entities",
+                    "{{entity_id}}",
+                    "audit"
+                  ],
+                  "query": [
+                    {
+                      "key": "tenant_id",
+                      "value": "{{tenant_id}}"
+                    },
+                    {
+                      "key": "limit",
+                      "value": "50"
+                    },
+                    {
+                      "key": "offset",
+                      "value": "0"
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Credentials",
+          "item": [
+            {
+              "name": "GET /entities/:id/credentials",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/entities/{{target_entity_id}}/credentials",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "entities",
+                    "{{target_entity_id}}",
+                    "credentials"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "POST /entities/:id/credentials/password",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/entities/{{target_entity_id}}/credentials/password",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "entities",
+                    "{{target_entity_id}}",
+                    "credentials",
+                    "password"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"password\": \"change-me-{{run_id}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "POST /entities/:id/credentials/api-keys",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/entities/{{target_entity_id}}/credentials/api-keys",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "entities",
+                    "{{target_entity_id}}",
+                    "credentials",
+                    "api-keys"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"postman-key-{{run_id}}\",\n  \"expires_at\": null\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "DELETE /entities/:entity_id/credentials/:cred_id",
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/entities/{{target_entity_id}}/credentials/{{credential_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "entities",
+                    "{{target_entity_id}}",
+                    "credentials",
+                    "{{credential_id}}"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Ownerships",
+          "item": [
+            {
+              "name": "GET /entities/:id/owned",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/entities/{{owner_id}}/owned",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "entities",
+                    "{{owner_id}}",
+                    "owned"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "POST /entities/:id/owned",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/entities/{{owner_id}}/owned",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "entities",
+                    "{{owner_id}}",
+                    "owned"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"owned_id\": \"{{owned_id}}\",\n  \"relation\": \"owner\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "DELETE /entities/:owner_id/owned/:owned_id",
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/entities/{{owner_id}}/owned/{{owned_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "entities",
+                    "{{owner_id}}",
+                    "owned",
+                    "{{owned_id}}"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Groups",
+          "item": [
+            {
+              "name": "GET /groups",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/groups?tenant_id={{tenant_id}}&limit=20&offset=0",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "groups"
+                  ],
+                  "query": [
+                    {
+                      "key": "tenant_id",
+                      "value": "{{tenant_id}}"
+                    },
+                    {
+                      "key": "limit",
+                      "value": "20"
+                    },
+                    {
+                      "key": "offset",
+                      "value": "0"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "name": "POST /groups",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/groups",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "groups"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"group-{{run_id}}\",\n  \"tenant_id\": null,\n  \"description\": \"Created from Postman\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "GET /groups/:id",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/groups/{{group_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "groups",
+                    "{{group_id}}"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "DELETE /groups/:id",
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/groups/{{group_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "groups",
+                    "{{group_id}}"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "GET /groups/:id/access",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/groups/{{group_id}}/access?action=read&tenant_id={{tenant_id}}&resource_kind=channel&limit=20&offset=0",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "groups",
+                    "{{group_id}}",
+                    "access"
+                  ],
+                  "query": [
+                    {
+                      "key": "action",
+                      "value": "read"
+                    },
+                    {
+                      "key": "tenant_id",
+                      "value": "{{tenant_id}}"
+                    },
+                    {
+                      "key": "resource_kind",
+                      "value": "channel"
+                    },
+                    {
+                      "key": "limit",
+                      "value": "20"
+                    },
+                    {
+                      "key": "offset",
+                      "value": "0"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "name": "GET /groups/:id/members",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/groups/{{group_id}}/members",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "groups",
+                    "{{group_id}}",
+                    "members"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "POST /groups/:id/members",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/groups/{{group_id}}/members",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "groups",
+                    "{{group_id}}",
+                    "members"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"entity_id\": \"{{member_entity_id}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "DELETE /groups/:group_id/members/:entity_id",
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/groups/{{group_id}}/members/{{member_entity_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "groups",
+                    "{{group_id}}",
+                    "members",
+                    "{{member_entity_id}}"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Resources",
+          "item": [
+            {
+              "name": "GET /resources",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/resources?kind=channel&tenant_id={{tenant_id}}&limit=20&offset=0",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "resources"
+                  ],
+                  "query": [
+                    {
+                      "key": "kind",
+                      "value": "channel"
+                    },
+                    {
+                      "key": "tenant_id",
+                      "value": "{{tenant_id}}"
+                    },
+                    {
+                      "key": "limit",
+                      "value": "20"
+                    },
+                    {
+                      "key": "offset",
+                      "value": "0"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "name": "POST /resources",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/resources",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "resources"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"kind\": \"channel\",\n  \"name\": \"channel-{{run_id}}\",\n  \"tenant_id\": null,\n  \"owner_id\": null,\n  \"attributes\": {\n    \"source\": \"postman\"\n  }\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "GET /resources/:id",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/resources/{{resource_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "resources",
+                    "{{resource_id}}"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "PUT /resources/:id",
+              "request": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/resources/{{resource_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "resources",
+                    "{{resource_id}}"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"channel-updated-{{run_id}}\",\n  \"attributes\": {\n    \"updated_by\": \"postman\"\n  }\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "DELETE /resources/:id",
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/resources/{{resource_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "resources",
+                    "{{resource_id}}"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "GET /resources/:id/access",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/resources/{{resource_id}}/access?action=read&effect=allow&limit=20&offset=0",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "resources",
+                    "{{resource_id}}",
+                    "access"
+                  ],
+                  "query": [
+                    {
+                      "key": "action",
+                      "value": "read"
+                    },
+                    {
+                      "key": "effect",
+                      "value": "allow"
+                    },
+                    {
+                      "key": "limit",
+                      "value": "20"
+                    },
+                    {
+                      "key": "offset",
+                      "value": "0"
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Roles",
+          "item": [
+            {
+              "name": "GET /roles",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/roles?tenant_id={{tenant_id}}&limit=20&offset=0",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "roles"
+                  ],
+                  "query": [
+                    {
+                      "key": "tenant_id",
+                      "value": "{{tenant_id}}"
+                    },
+                    {
+                      "key": "limit",
+                      "value": "20"
+                    },
+                    {
+                      "key": "offset",
+                      "value": "0"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "name": "POST /roles",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/roles",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "roles"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"role-{{run_id}}\",\n  \"tenant_id\": null,\n  \"description\": \"Created from Postman\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "GET /roles/:id",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/roles/{{role_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "roles",
+                    "{{role_id}}"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "DELETE /roles/:id",
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/roles/{{role_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "roles",
+                    "{{role_id}}"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "GET /roles/:id/holders",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/roles/{{role_id}}/holders?limit=20&offset=0",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "roles",
+                    "{{role_id}}",
+                    "holders"
+                  ],
+                  "query": [
+                    {
+                      "key": "limit",
+                      "value": "20"
+                    },
+                    {
+                      "key": "offset",
+                      "value": "0"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "name": "GET /roles/:id/capabilities",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/roles/{{role_id}}/capabilities",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "roles",
+                    "{{role_id}}",
+                    "capabilities"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "POST /roles/:id/capabilities",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/roles/{{role_id}}/capabilities",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "roles",
+                    "{{role_id}}",
+                    "capabilities"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"capability_id\": \"{{capability_id}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "DELETE /roles/:role_id/capabilities/:cap_id",
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/roles/{{role_id}}/capabilities/{{capability_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "roles",
+                    "{{role_id}}",
+                    "capabilities",
+                    "{{capability_id}}"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Capabilities",
+          "item": [
+            {
+              "name": "GET /capabilities",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/capabilities?resource_kind=channel",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "capabilities"
+                  ],
+                  "query": [
+                    {
+                      "key": "resource_kind",
+                      "value": "channel"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "name": "POST /capabilities",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/capabilities",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "capabilities"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"custom.{{run_id}}\",\n  \"resource_kind\": null,\n  \"description\": \"Created from Postman\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "GET /capabilities/:id",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/capabilities/{{capability_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "capabilities",
+                    "{{capability_id}}"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "DELETE /capabilities/:id",
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/capabilities/{{capability_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "capabilities",
+                    "{{capability_id}}"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Policies",
+          "item": [
+            {
+              "name": "GET /policies",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/policies?subject_kind=entity&subject_id={{entity_id}}&limit=20&offset=0",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "policies"
+                  ],
+                  "query": [
+                    {
+                      "key": "subject_kind",
+                      "value": "entity"
+                    },
+                    {
+                      "key": "subject_id",
+                      "value": "{{entity_id}}"
+                    },
+                    {
+                      "key": "limit",
+                      "value": "20"
+                    },
+                    {
+                      "key": "offset",
+                      "value": "0"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "name": "POST /policies",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/policies",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "policies"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"tenant_id\": null,\n  \"subject_kind\": \"entity\",\n  \"subject_id\": \"{{entity_id}}\",\n  \"grant_kind\": \"capability\",\n  \"grant_id\": \"{{capability_id}}\",\n  \"scope_kind\": \"object_kind\",\n  \"scope_ref\": \"resource\",\n  \"effect\": \"allow\",\n  \"conditions\": {}\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "GET /policies/:id",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/policies/{{policy_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "policies",
+                    "{{policy_id}}"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "DELETE /policies/:id",
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/policies/{{policy_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "policies",
+                    "{{policy_id}}"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Tenants",
+          "item": [
+            {
+              "name": "GET /tenants",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/tenants?name=&route=&status=active&limit=20&offset=0",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "tenants"
+                  ],
+                  "query": [
+                    {
+                      "key": "name",
+                      "value": ""
+                    },
+                    {
+                      "key": "route",
+                      "value": ""
+                    },
+                    {
+                      "key": "status",
+                      "value": "active"
+                    },
+                    {
+                      "key": "limit",
+                      "value": "20"
+                    },
+                    {
+                      "key": "offset",
+                      "value": "0"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "name": "POST /tenants",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/tenants",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "tenants"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"tenant-{{run_id}}\",\n  \"route\": \"tenant-{{run_id}}\",\n  \"tags\": [\n    \"postman\"\n  ],\n  \"attributes\": {\n    \"source\": \"postman\"\n  }\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "GET /tenants/:id",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/tenants/{{tenant_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "tenants",
+                    "{{tenant_id}}"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "PUT /tenants/:id",
+              "request": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/tenants/{{tenant_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "tenants",
+                    "{{tenant_id}}"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"tenant-updated-{{run_id}}\",\n  \"route\": \"tenant-updated-{{run_id}}\",\n  \"tags\": [\n    \"postman\",\n    \"updated\"\n  ],\n  \"attributes\": {\n    \"updated_by\": \"postman\"\n  }\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "DELETE /tenants/:id",
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/tenants/{{tenant_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "tenants",
+                    "{{tenant_id}}"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "POST /tenants/:id/enable",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/tenants/{{tenant_id}}/enable",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "tenants",
+                    "{{tenant_id}}",
+                    "enable"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "POST /tenants/:id/disable",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/tenants/{{tenant_id}}/disable",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "tenants",
+                    "{{tenant_id}}",
+                    "disable"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "POST /tenants/:id/freeze",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/tenants/{{tenant_id}}/freeze",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "tenants",
+                    "{{tenant_id}}",
+                    "freeze"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Authorization",
+          "item": [
+            {
+              "name": "POST /authz/check",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/authz/check",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "authz",
+                    "check"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"subject_id\": \"{{entity_id}}\",\n  \"action\": \"read\",\n  \"resource_id\": \"{{resource_id}}\",\n  \"context\": {}\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "POST /authz/check with object_kind",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/authz/check",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "authz",
+                    "check"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"subject_id\": \"{{entity_id}}\",\n  \"action\": \"manage\",\n  \"object_kind\": \"entity\",\n  \"object_id\": \"{{target_entity_id}}\",\n  \"context\": {}\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "POST /authz/check/bulk",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/authz/check/bulk",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "authz",
+                    "check",
+                    "bulk"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"subject_id\": \"{{entity_id}}\",\n  \"resource_id\": \"{{resource_id}}\",\n  \"actions\": [\n    \"read\",\n    \"write\",\n    \"delete\"\n  ],\n  \"context\": {}\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "POST /authz/explain",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/authz/explain",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "authz",
+                    "explain"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"subject_id\": \"{{entity_id}}\",\n  \"action\": \"read\",\n  \"resource_id\": \"{{resource_id}}\",\n  \"context\": {}\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Audit",
+          "item": [
+            {
+              "name": "GET /audit",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/audit?tenant_id={{tenant_id}}&entity_id={{entity_id}}&event=authz.check&limit=50&offset=0",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "audit"
+                  ],
+                  "query": [
+                    {
+                      "key": "tenant_id",
+                      "value": "{{tenant_id}}"
+                    },
+                    {
+                      "key": "entity_id",
+                      "value": "{{entity_id}}"
+                    },
+                    {
+                      "key": "event",
+                      "value": "authz.check"
+                    },
+                    {
+                      "key": "limit",
+                      "value": "50"
+                    },
+                    {
+                      "key": "offset",
+                      "value": "0"
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Admin Hygiene",
+          "item": [
+            {
+              "name": "GET /admin/orphan-policies",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/admin/orphan-policies?limit=50&offset=0",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "admin",
+                    "orphan-policies"
+                  ],
+                  "query": [
+                    {
+                      "key": "limit",
+                      "value": "50"
+                    },
+                    {
+                      "key": "offset",
+                      "value": "0"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "name": "GET /admin/unprotected-resources",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/admin/unprotected-resources?tenant_id={{tenant_id}}&kind=channel&limit=50&offset=0",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "admin",
+                    "unprotected-resources"
+                  ],
+                  "query": [
+                    {
+                      "key": "tenant_id",
+                      "value": "{{tenant_id}}"
+                    },
+                    {
+                      "key": "kind",
+                      "value": "channel"
+                    },
+                    {
+                      "key": "limit",
+                      "value": "50"
+                    },
+                    {
+                      "key": "offset",
+                      "value": "0"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "name": "GET /admin/expiring-credentials",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/admin/expiring-credentials?days=30&entity_id={{entity_id}}&kind=api_key&limit=50&offset=0",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "admin",
+                    "expiring-credentials"
+                  ],
+                  "query": [
+                    {
+                      "key": "days",
+                      "value": "30"
+                    },
+                    {
+                      "key": "entity_id",
+                      "value": "{{entity_id}}"
+                    },
+                    {
+                      "key": "kind",
+                      "value": "api_key"
+                    },
+                    {
+                      "key": "limit",
+                      "value": "50"
+                    },
+                    {
+                      "key": "offset",
+                      "value": "0"
+                    }
+                  ]
+                }
               }
             }
           ]

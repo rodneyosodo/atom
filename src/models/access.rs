@@ -302,6 +302,7 @@ pub struct RoleHoldersResponse {
 #[derive(Debug, Deserialize)]
 pub struct AuditQuery {
     pub entity_id: Option<Uuid>,
+    pub tenant_id: Option<Uuid>,
     pub event: Option<String>,
     pub outcome: Option<AuditOutcome>,
     pub from: Option<DateTime<Utc>>,
@@ -316,6 +317,7 @@ pub struct AuditQuery {
 pub struct AuditLogItem {
     pub id: Uuid,
     pub entity_id: Option<Uuid>,
+    pub tenant_id: Option<Uuid>,
     pub event: String,
     pub outcome: AuditOutcome,
     pub details: Value,

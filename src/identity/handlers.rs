@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::{
     audit,
-    auth::{has_global_manage, AuthContext},
+    auth::{has_capability_in_scope, require_capability, AuthContext, Scope},
     error::AppError,
     models::{
         entity::{CreateEntity, CreateOwnership, ListEntities, UpdateEntity},
@@ -21,6 +21,39 @@ use crate::{
 };
 
 use super::{repo, service};
+
+fn scope_for_tenant(tenant_id: Option<Uuid>) -> Scope {
+    match tenant_id {
+        Some(tenant_id) => Scope::Tenant(tenant_id),
+        None => Scope::Platform,
+    }
+}
+
+async fn require_credential_management(
+    state: &AppState,
+    actor_id: Uuid,
+    target_entity_id: Uuid,
+) -> Result<Option<Uuid>, AppError> {
+    let target = repo::get_entity(&state.pool, target_entity_id).await?;
+    if has_capability_in_scope(
+        &state.pool,
+        actor_id,
+        "credential.manage",
+        Scope::Object(target_entity_id),
+    )
+    .await?
+    {
+        return Ok(target.tenant_id);
+    }
+    require_capability(
+        &state.pool,
+        actor_id,
+        "credential.manage",
+        scope_for_tenant(target.tenant_id),
+    )
+    .await?;
+    Ok(target.tenant_id)
+}
 
 // ─── Health ───────────────────────────────────────────────────────────────────
 
@@ -68,6 +101,7 @@ pub async fn logout(
     audit::write(
         &state.pool,
         Some(auth.entity_id),
+        auth.tenant_id,
         "auth.logout",
         AuditOutcome::Allow,
         serde_json::json!({}),
@@ -89,9 +123,16 @@ pub async fn get_session(
 
 pub async fn create_entity(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Json(req): Json<CreateEntity>,
 ) -> Result<impl IntoResponse, AppError> {
+    require_capability(
+        &state.pool,
+        auth.entity_id,
+        "manage",
+        scope_for_tenant(req.tenant_id),
+    )
+    .await?;
     let entity = repo::create_entity(&state.pool, req).await?;
     Ok((StatusCode::CREATED, Json(entity)))
 }
@@ -116,10 +157,18 @@ pub async fn list_entities(
 
 pub async fn update_entity(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateEntity>,
 ) -> Result<impl IntoResponse, AppError> {
+    let existing = repo::get_entity(&state.pool, id).await?;
+    require_capability(
+        &state.pool,
+        auth.entity_id,
+        "manage",
+        scope_for_tenant(existing.tenant_id),
+    )
+    .await?;
     let entity = repo::update_entity(&state.pool, id, req.name, req.status, req.attributes).await?;
     Ok(Json(entity))
 }
@@ -129,8 +178,15 @@ pub async fn delete_entity(
     auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
-    if auth.entity_id != id && !has_global_manage(&state.pool, auth.entity_id).await? {
-        return Err(AppError::Forbidden);
+    if auth.entity_id != id {
+        let existing = repo::get_entity(&state.pool, id).await?;
+        require_capability(
+            &state.pool,
+            auth.entity_id,
+            "manage",
+            scope_for_tenant(existing.tenant_id),
+        )
+        .await?;
     }
     repo::delete_entity(&state.pool, id).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -140,10 +196,11 @@ pub async fn delete_entity(
 
 pub async fn create_password(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(entity_id): Path<Uuid>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, AppError> {
+    let tenant_id = require_credential_management(&state, auth.entity_id, entity_id).await?;
     let password = body
         .get("password")
         .and_then(|v| v.as_str())
@@ -152,6 +209,7 @@ pub async fn create_password(
     audit::write(
         &state.pool,
         Some(entity_id),
+        tenant_id,
         "credential.create",
         AuditOutcome::Allow,
         serde_json::json!({"kind": "password"}),
@@ -162,14 +220,16 @@ pub async fn create_password(
 
 pub async fn create_api_key(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(entity_id): Path<Uuid>,
     Json(req): Json<CreateApiKey>,
 ) -> Result<impl IntoResponse, AppError> {
+    let tenant_id = require_credential_management(&state, auth.entity_id, entity_id).await?;
     let resp = service::create_api_key(&state.pool, entity_id, req).await?;
     audit::write(
         &state.pool,
         Some(entity_id),
+        tenant_id,
         "credential.create",
         AuditOutcome::Allow,
         serde_json::json!({"kind": "api_key", "credential_id": resp.credential_id}),
@@ -180,9 +240,10 @@ pub async fn create_api_key(
 
 pub async fn list_credentials(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(entity_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    require_credential_management(&state, auth.entity_id, entity_id).await?;
     let creds = service::list_credentials(&state.pool, entity_id).await?;
     Ok(Json(serde_json::json!({"items": creds})))
 }
@@ -192,10 +253,12 @@ pub async fn revoke_credential(
     auth: AuthContext,
     Path((entity_id, cred_id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse, AppError> {
+    let tenant_id = require_credential_management(&state, auth.entity_id, entity_id).await?;
     service::revoke_credential(&state.pool, entity_id, cred_id).await?;
     audit::write(
         &state.pool,
         Some(auth.entity_id),
+        tenant_id,
         "credential.revoke",
         AuditOutcome::Allow,
         serde_json::json!({"entity_id": entity_id, "credential_id": cred_id}),
@@ -208,9 +271,16 @@ pub async fn revoke_credential(
 
 pub async fn create_group(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Json(req): Json<CreateGroup>,
 ) -> Result<impl IntoResponse, AppError> {
+    require_capability(
+        &state.pool,
+        auth.entity_id,
+        "manage",
+        scope_for_tenant(req.tenant_id),
+    )
+    .await?;
     let group = repo::create_group(&state.pool, req).await?;
     Ok((StatusCode::CREATED, Json(group)))
 }
@@ -235,19 +305,35 @@ pub async fn list_groups(
 
 pub async fn delete_group(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    let group = repo::get_group(&state.pool, id).await?;
+    require_capability(
+        &state.pool,
+        auth.entity_id,
+        "manage",
+        scope_for_tenant(group.tenant_id),
+    )
+    .await?;
     repo::delete_group(&state.pool, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn add_group_member(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(group_id): Path<Uuid>,
     Json(req): Json<AddMember>,
 ) -> Result<impl IntoResponse, AppError> {
+    let group = repo::get_group(&state.pool, group_id).await?;
+    require_capability(
+        &state.pool,
+        auth.entity_id,
+        "manage",
+        scope_for_tenant(group.tenant_id),
+    )
+    .await?;
     repo::add_group_member(&state.pool, group_id, req.entity_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -263,9 +349,17 @@ pub async fn list_group_members(
 
 pub async fn remove_group_member(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path((group_id, entity_id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse, AppError> {
+    let group = repo::get_group(&state.pool, group_id).await?;
+    require_capability(
+        &state.pool,
+        auth.entity_id,
+        "manage",
+        scope_for_tenant(group.tenant_id),
+    )
+    .await?;
     repo::remove_group_member(&state.pool, group_id, entity_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

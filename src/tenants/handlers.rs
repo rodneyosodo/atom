@@ -7,7 +7,7 @@ use axum::{
 use uuid::Uuid;
 
 use crate::{
-    auth::{AuthContext, RequireManage},
+    auth::{require_capability, AuthContext, Scope},
     error::AppError,
     models::{
         enums::TenantStatus,
@@ -20,10 +20,17 @@ use super::repo;
 
 pub async fn create_tenant(
     State(state): State<AppState>,
-    auth: RequireManage,
+    auth: AuthContext,
     Json(req): Json<CreateTenant>,
 ) -> Result<impl IntoResponse, AppError> {
-    let tenant = repo::create_tenant(&state.pool, req, Some(auth.0.entity_id)).await?;
+    require_capability(
+        &state.pool,
+        auth.entity_id,
+        "tenant.manage",
+        Scope::Platform,
+    )
+    .await?;
+    let tenant = repo::create_tenant(&state.pool, req, Some(auth.entity_id)).await?;
     Ok((StatusCode::CREATED, Json(tenant)))
 }
 
@@ -47,39 +54,56 @@ pub async fn get_tenant(
 
 pub async fn update_tenant(
     State(state): State<AppState>,
-    auth: RequireManage,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateTenant>,
 ) -> Result<impl IntoResponse, AppError> {
-    let tenant = repo::update_tenant(&state.pool, id, req, Some(auth.0.entity_id)).await?;
+    require_capability(
+        &state.pool,
+        auth.entity_id,
+        "tenant.manage",
+        Scope::Platform,
+    )
+    .await?;
+    let tenant = repo::update_tenant(&state.pool, id, req, Some(auth.entity_id)).await?;
     Ok(Json(tenant))
 }
 
 pub async fn enable_tenant(
     State(state): State<AppState>,
-    auth: RequireManage,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
-    let tenant = repo::change_tenant_status(
+    require_capability(
         &state.pool,
-        id,
-        TenantStatus::Active,
-        Some(auth.0.entity_id),
+        auth.entity_id,
+        "tenant.manage",
+        Scope::Platform,
     )
     .await?;
+    let tenant =
+        repo::change_tenant_status(&state.pool, id, TenantStatus::Active, Some(auth.entity_id))
+            .await?;
     Ok(Json(tenant))
 }
 
 pub async fn disable_tenant(
     State(state): State<AppState>,
-    auth: RequireManage,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    require_capability(
+        &state.pool,
+        auth.entity_id,
+        "tenant.manage",
+        Scope::Platform,
+    )
+    .await?;
     let tenant = repo::change_tenant_status(
         &state.pool,
         id,
         TenantStatus::Inactive,
-        Some(auth.0.entity_id),
+        Some(auth.entity_id),
     )
     .await?;
     Ok(Json(tenant))
@@ -87,30 +111,35 @@ pub async fn disable_tenant(
 
 pub async fn freeze_tenant(
     State(state): State<AppState>,
-    auth: RequireManage,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
-    let tenant = repo::change_tenant_status(
+    require_capability(
         &state.pool,
-        id,
-        TenantStatus::Frozen,
-        Some(auth.0.entity_id),
+        auth.entity_id,
+        "tenant.manage",
+        Scope::Platform,
     )
     .await?;
+    let tenant =
+        repo::change_tenant_status(&state.pool, id, TenantStatus::Frozen, Some(auth.entity_id))
+            .await?;
     Ok(Json(tenant))
 }
 
 pub async fn delete_tenant(
     State(state): State<AppState>,
-    auth: RequireManage,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
-    repo::change_tenant_status(
+    require_capability(
         &state.pool,
-        id,
-        TenantStatus::Deleted,
-        Some(auth.0.entity_id),
+        auth.entity_id,
+        "tenant.manage",
+        Scope::Platform,
     )
     .await?;
+    repo::change_tenant_status(&state.pool, id, TenantStatus::Deleted, Some(auth.entity_id))
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -1,0 +1,383 @@
+use sqlx::PgPool;
+use uuid::Uuid;
+
+use crate::{
+    error::{db_err, AppError},
+    models::{
+        enums::{GrantKind, ScopeKind, SubjectKind},
+        policy::CreatePolicyBinding,
+    },
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuardrailDecision {
+    Allow,
+    Deny,
+    RequireOverride,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Assignment {
+    pub entity_kind: String,
+    pub capability_name: String,
+    pub object_kind: String,
+    pub object_type: Option<String>,
+    pub tenant_id: Option<Uuid>,
+}
+
+pub fn decide(assignments: &[Assignment], rules: &[Rule]) -> Result<(), String> {
+    for assignment in assignments {
+        let decision = rules
+            .iter()
+            .filter(|rule| rule.matches(assignment))
+            .max_by_key(|rule| rule.precedence())
+            .map(|rule| rule.decision)
+            .unwrap_or(GuardrailDecision::Allow);
+
+        match decision {
+            GuardrailDecision::Allow => {}
+            GuardrailDecision::Deny => {
+                return Err(format!(
+                    "guardrail rejected {} receiving {} on {}{}",
+                    assignment.entity_kind,
+                    assignment.capability_name,
+                    assignment.object_kind,
+                    assignment
+                        .object_type
+                        .as_ref()
+                        .map(|object_type| format!(":{object_type}"))
+                        .unwrap_or_default()
+                ));
+            }
+            GuardrailDecision::RequireOverride => {
+                return Err(format!(
+                    "guardrail requires override for {} receiving {}",
+                    assignment.entity_kind, assignment.capability_name
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rule {
+    pub tenant_id: Option<Uuid>,
+    pub entity_kind: String,
+    pub capability_name: String,
+    pub object_kind: String,
+    pub object_type: Option<String>,
+    pub decision: GuardrailDecision,
+    pub is_absolute: bool,
+}
+
+impl Rule {
+    fn matches(&self, assignment: &Assignment) -> bool {
+        self.entity_kind == assignment.entity_kind
+            && self.capability_name == assignment.capability_name
+            && self.object_kind == assignment.object_kind
+            && self
+                .object_type
+                .as_ref()
+                .map(|object_type| assignment.object_type.as_ref() == Some(object_type))
+                .unwrap_or(true)
+            && (self.tenant_id.is_none() || self.tenant_id == assignment.tenant_id)
+    }
+
+    fn precedence(&self) -> i32 {
+        match (self.is_absolute, self.tenant_id.is_some(), self.decision) {
+            (true, _, GuardrailDecision::Deny) => 50,
+            (true, _, GuardrailDecision::RequireOverride) => 45,
+            (_, true, GuardrailDecision::Deny) => 40,
+            (_, true, GuardrailDecision::RequireOverride) => 35,
+            (_, true, GuardrailDecision::Allow) => 30,
+            (_, false, GuardrailDecision::Deny) => 20,
+            (_, false, GuardrailDecision::RequireOverride) => 15,
+            (_, false, GuardrailDecision::Allow) => 10,
+        }
+    }
+}
+
+pub async fn validate_policy(pool: &PgPool, req: &CreatePolicyBinding) -> Result<(), AppError> {
+    let assignments = assignments_for_policy(pool, req).await?;
+    validate_assignments(pool, &assignments).await
+}
+
+pub async fn validate_role_capability(
+    pool: &PgPool,
+    role_id: Uuid,
+    capability_id: Uuid,
+) -> Result<(), AppError> {
+    let capability_names = capability_names(pool, &[capability_id]).await?;
+    let rows = sqlx::query(
+        r#"SELECT e.kind AS entity_kind, pb.tenant_id, pb.scope_kind, pb.scope_ref
+           FROM policy_bindings pb
+           JOIN entities e ON pb.subject_kind = 'entity' AND e.id = pb.subject_id
+           WHERE pb.grant_kind = 'role' AND pb.grant_id = $1
+           UNION ALL
+           SELECT e.kind AS entity_kind, pb.tenant_id, pb.scope_kind, pb.scope_ref
+           FROM policy_bindings pb
+           JOIN group_members gm ON pb.subject_kind = 'group' AND gm.group_id = pb.subject_id
+           JOIN entities e ON e.id = gm.entity_id
+           WHERE pb.grant_kind = 'role' AND pb.grant_id = $1"#,
+    )
+    .bind(role_id)
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)?;
+
+    let mut assignments = Vec::new();
+    for row in rows {
+        use sqlx::Row;
+        let entity_kind: String = row.try_get("entity_kind").map_err(db_err)?;
+        let tenant_id: Option<Uuid> = row.try_get("tenant_id").map_err(db_err)?;
+        let scope_kind: ScopeKind = row.try_get("scope_kind").map_err(db_err)?;
+        let scope_ref: Option<String> = row.try_get("scope_ref").map_err(db_err)?;
+        let (object_kind, object_type) = scope_to_object(scope_kind, scope_ref.as_deref());
+        assignments.extend(capability_names.iter().map(|capability_name| Assignment {
+            entity_kind: entity_kind.clone(),
+            capability_name: capability_name.clone(),
+            object_kind: object_kind.clone(),
+            object_type: object_type.clone(),
+            tenant_id,
+        }));
+    }
+
+    validate_assignments(pool, &assignments).await
+}
+
+pub async fn validate_group_member(
+    pool: &PgPool,
+    group_id: Uuid,
+    entity_id: Uuid,
+) -> Result<(), AppError> {
+    use sqlx::Row;
+
+    let entity_kind: String = sqlx::query_scalar("SELECT kind FROM entities WHERE id = $1")
+        .bind(entity_id)
+        .fetch_one(pool)
+        .await
+        .map_err(db_err)?;
+
+    let rows = sqlx::query(
+        r#"SELECT pb.tenant_id, pb.grant_kind, pb.grant_id, pb.scope_kind, pb.scope_ref
+           FROM policy_bindings pb
+           WHERE pb.subject_kind = 'group' AND pb.subject_id = $1"#,
+    )
+    .bind(group_id)
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)?;
+
+    let mut assignments = Vec::new();
+    for row in rows {
+        let tenant_id: Option<Uuid> = row.try_get("tenant_id").map_err(db_err)?;
+        let grant_kind: GrantKind = row.try_get("grant_kind").map_err(db_err)?;
+        let grant_id: Uuid = row.try_get("grant_id").map_err(db_err)?;
+        let scope_kind: ScopeKind = row.try_get("scope_kind").map_err(db_err)?;
+        let scope_ref: Option<String> = row.try_get("scope_ref").map_err(db_err)?;
+        let capability_names = match grant_kind {
+            GrantKind::Capability => capability_names(pool, &[grant_id]).await?,
+            GrantKind::Role => role_capability_names(pool, grant_id).await?,
+        };
+        let (object_kind, object_type) = scope_to_object(scope_kind, scope_ref.as_deref());
+        assignments.extend(
+            capability_names
+                .into_iter()
+                .map(|capability_name| Assignment {
+                    entity_kind: entity_kind.clone(),
+                    capability_name,
+                    object_kind: object_kind.clone(),
+                    object_type: object_type.clone(),
+                    tenant_id,
+                }),
+        );
+    }
+
+    validate_assignments(pool, &assignments).await
+}
+
+async fn assignments_for_policy(
+    pool: &PgPool,
+    req: &CreatePolicyBinding,
+) -> Result<Vec<Assignment>, AppError> {
+    let entity_kinds = subject_entity_kinds(pool, req.subject_kind.clone(), req.subject_id).await?;
+    let capability_names = match req.grant_kind {
+        GrantKind::Capability => capability_names(pool, &[req.grant_id]).await?,
+        GrantKind::Role => role_capability_names(pool, req.grant_id).await?,
+    };
+    let (object_kind, object_type) =
+        scope_to_object(req.scope_kind.clone(), req.scope_ref.as_deref());
+
+    Ok(entity_kinds
+        .into_iter()
+        .flat_map(|entity_kind| {
+            let object_kind = object_kind.clone();
+            let object_type = object_type.clone();
+            capability_names
+                .iter()
+                .map(move |capability_name| Assignment {
+                    entity_kind: entity_kind.clone(),
+                    capability_name: capability_name.clone(),
+                    object_kind: object_kind.clone(),
+                    object_type: object_type.clone(),
+                    tenant_id: req.tenant_id,
+                })
+        })
+        .collect())
+}
+
+async fn validate_assignments(pool: &PgPool, assignments: &[Assignment]) -> Result<(), AppError> {
+    if assignments.is_empty() {
+        return Ok(());
+    }
+    let rules = load_rules(pool).await?;
+    decide(assignments, &rules).map_err(AppError::bad_request)
+}
+
+async fn load_rules(pool: &PgPool) -> Result<Vec<Rule>, AppError> {
+    use sqlx::Row;
+    sqlx::query(
+        r#"SELECT tenant_id, entity_kind, capability_name, object_kind, object_type, decision, is_absolute
+           FROM capability_assignment_rules"#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)?
+    .into_iter()
+    .map(|row| {
+        let decision: String = row.try_get("decision").map_err(db_err)?;
+        Ok(Rule {
+            tenant_id: row.try_get("tenant_id").map_err(db_err)?,
+            entity_kind: row.try_get("entity_kind").map_err(db_err)?,
+            capability_name: row.try_get("capability_name").map_err(db_err)?,
+            object_kind: row.try_get("object_kind").map_err(db_err)?,
+            object_type: row.try_get("object_type").map_err(db_err)?,
+            decision: match decision.as_str() {
+                "allow" => GuardrailDecision::Allow,
+                "deny" => GuardrailDecision::Deny,
+                "require_override" => GuardrailDecision::RequireOverride,
+                _ => GuardrailDecision::Deny,
+            },
+            is_absolute: row.try_get("is_absolute").map_err(db_err)?,
+        })
+    })
+    .collect()
+}
+
+async fn subject_entity_kinds(
+    pool: &PgPool,
+    subject_kind: SubjectKind,
+    subject_id: Uuid,
+) -> Result<Vec<String>, AppError> {
+    match subject_kind {
+        SubjectKind::Entity => sqlx::query_scalar("SELECT kind FROM entities WHERE id = $1")
+            .bind(subject_id)
+            .fetch_all(pool)
+            .await
+            .map_err(db_err),
+        SubjectKind::Group => sqlx::query_scalar(
+            r#"SELECT DISTINCT e.kind
+               FROM group_members gm
+               JOIN entities e ON e.id = gm.entity_id
+               WHERE gm.group_id = $1"#,
+        )
+        .bind(subject_id)
+        .fetch_all(pool)
+        .await
+        .map_err(db_err),
+    }
+}
+
+async fn capability_names(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<String>, AppError> {
+    sqlx::query_scalar("SELECT name FROM capabilities WHERE id = ANY($1::uuid[])")
+        .bind(ids)
+        .fetch_all(pool)
+        .await
+        .map_err(db_err)
+}
+
+async fn role_capability_names(pool: &PgPool, role_id: Uuid) -> Result<Vec<String>, AppError> {
+    sqlx::query_scalar(
+        r#"SELECT c.name
+           FROM role_capabilities rc
+           JOIN capabilities c ON c.id = rc.capability_id
+           WHERE rc.role_id = $1"#,
+    )
+    .bind(role_id)
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)
+}
+
+fn scope_to_object(scope_kind: ScopeKind, scope_ref: Option<&str>) -> (String, Option<String>) {
+    match scope_kind {
+        ScopeKind::Platform => ("platform".to_string(), None),
+        ScopeKind::Tenant => ("tenant".to_string(), None),
+        ScopeKind::ObjectKind => (scope_ref.unwrap_or("unknown").to_string(), None),
+        ScopeKind::ObjectType => scope_ref
+            .and_then(|value| value.split_once(':').map(|(kind, _)| (kind, value)))
+            .map(|(kind, value)| (kind.to_string(), Some(value.to_string())))
+            .unwrap_or_else(|| ("unknown".to_string(), None)),
+        ScopeKind::Object => ("object".to_string(), None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assignment(kind: &str, capability: &str) -> Assignment {
+        Assignment {
+            entity_kind: kind.into(),
+            capability_name: capability.into(),
+            object_kind: "resource".into(),
+            object_type: Some("resource:channel".into()),
+            tenant_id: None,
+        }
+    }
+
+    #[test]
+    fn absolute_deny_wins_over_allow() {
+        let rules = vec![
+            Rule {
+                tenant_id: None,
+                entity_kind: "device".into(),
+                capability_name: "manage".into(),
+                object_kind: "resource".into(),
+                object_type: None,
+                decision: GuardrailDecision::Allow,
+                is_absolute: false,
+            },
+            Rule {
+                tenant_id: None,
+                entity_kind: "device".into(),
+                capability_name: "manage".into(),
+                object_kind: "resource".into(),
+                object_type: None,
+                decision: GuardrailDecision::Deny,
+                is_absolute: true,
+            },
+        ];
+        assert!(decide(&[assignment("device", "manage")], &rules).is_err());
+    }
+
+    #[test]
+    fn unmatched_assignment_allows_by_default() {
+        assert!(decide(&[assignment("service", "publish")], &[]).is_ok());
+    }
+
+    #[test]
+    fn matching_object_type_allow_passes() {
+        let rules = vec![Rule {
+            tenant_id: None,
+            entity_kind: "device".into(),
+            capability_name: "publish".into(),
+            object_kind: "resource".into(),
+            object_type: Some("resource:channel".into()),
+            decision: GuardrailDecision::Allow,
+            is_absolute: false,
+        }];
+        assert!(decide(&[assignment("device", "publish")], &rules).is_ok());
+    }
+}

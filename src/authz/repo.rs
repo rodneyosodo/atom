@@ -218,6 +218,7 @@ pub async fn add_role_capability(
     role_id: Uuid,
     cap_id: Uuid,
 ) -> Result<(), AppError> {
+    crate::guardrails::validate_role_capability(pool, role_id, cap_id).await?;
     sqlx::query(
         "INSERT INTO role_capabilities (role_id, capability_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
     )
@@ -326,6 +327,7 @@ pub async fn create_policy(
     pool: &PgPool,
     req: CreatePolicyBinding,
 ) -> Result<PolicyBinding, AppError> {
+    crate::guardrails::validate_policy(pool, &req).await?;
     let id = Uuid::new_v4();
     let conditions = if req.conditions.is_null() {
         serde_json::json!({})
@@ -334,11 +336,12 @@ pub async fn create_policy(
     };
     sqlx::query_as::<_, PolicyBinding>(
         r#"INSERT INTO policy_bindings
-             (id, subject_kind, subject_id, grant_kind, grant_id, scope_kind, scope_ref, effect, conditions)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-           RETURNING id, subject_kind, subject_id, grant_kind, grant_id, scope_kind, scope_ref, effect, conditions, created_at"#,
+             (id, tenant_id, subject_kind, subject_id, grant_kind, grant_id, scope_kind, scope_ref, effect, conditions)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+           RETURNING id, tenant_id, subject_kind, subject_id, grant_kind, grant_id, scope_kind, scope_ref, effect, conditions, created_at"#,
     )
     .bind(id)
+    .bind(req.tenant_id)
     .bind(req.subject_kind)
     .bind(req.subject_id)
     .bind(req.grant_kind)
@@ -354,7 +357,7 @@ pub async fn create_policy(
 
 pub async fn get_policy(pool: &PgPool, id: Uuid) -> Result<PolicyBinding, AppError> {
     sqlx::query_as::<_, PolicyBinding>(
-        r#"SELECT id, subject_kind, subject_id, grant_kind, grant_id, scope_kind, scope_ref, effect, conditions, created_at
+        r#"SELECT id, tenant_id, subject_kind, subject_id, grant_kind, grant_id, scope_kind, scope_ref, effect, conditions, created_at
            FROM policy_bindings WHERE id = $1"#,
     )
     .bind(id)
@@ -373,7 +376,7 @@ pub async fn list_policies(pool: &PgPool, params: ListPolicies) -> Result<Policy
     let subject_kind = params.subject_kind;
 
     let items = sqlx::query_as::<_, PolicyBinding>(
-        r#"SELECT id, subject_kind, subject_id, grant_kind, grant_id, scope_kind, scope_ref, effect, conditions, created_at
+        r#"SELECT id, tenant_id, subject_kind, subject_id, grant_kind, grant_id, scope_kind, scope_ref, effect, conditions, created_at
            FROM policy_bindings
            WHERE ($1::uuid IS NULL OR subject_id = $1)
              AND ($2::text IS NULL OR subject_kind = $2)
@@ -412,6 +415,45 @@ pub async fn delete_policy(pool: &PgPool, id: Uuid) -> Result<(), AppError> {
         return Err(AppError::not_found(format!("policy {id} not found")));
     }
     Ok(())
+}
+
+/// Best-effort ownership lookup for exact-object policy scopes. `None` means
+/// no object with that UUID exists in the known Atom object tables; `Some(None)`
+/// means the object is platform/global.
+pub async fn object_tenant_id_by_id(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<Option<Uuid>>, AppError> {
+    let row = sqlx::query(
+        r#"SELECT tenant_id FROM (
+             SELECT tenant_id FROM entities WHERE id = $1
+             UNION ALL
+             SELECT tenant_id FROM groups WHERE id = $1
+             UNION ALL
+             SELECT tenant_id FROM resources WHERE id = $1
+             UNION ALL
+             SELECT tenant_id FROM roles WHERE id = $1
+             UNION ALL
+             SELECT tenant_id FROM policy_bindings WHERE id = $1
+             UNION ALL
+             SELECT t.id AS tenant_id FROM tenants t WHERE t.id = $1
+             UNION ALL
+             SELECT e.tenant_id FROM credentials c JOIN entities e ON e.id = c.entity_id WHERE c.id = $1
+             UNION ALL
+             SELECT tenant_id FROM audit_logs WHERE id = $1
+           ) matches
+           LIMIT 1"#,
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(db_err)?;
+
+    row.map(|r| {
+        use sqlx::Row;
+        r.try_get::<Option<Uuid>, _>("tenant_id").map_err(db_err)
+    })
+    .transpose()
 }
 
 // ─── Query Views ──────────────────────────────────────────────────────────────
@@ -463,9 +505,10 @@ pub async fn entity_access(
                     role.id AS role_id, role.name AS role_name
              FROM bindings b
              JOIN resources r ON
-               b.scope_kind = 'all'
-               OR (b.scope_kind = 'resource_kind' AND b.scope_ref = r.kind)
-               OR (b.scope_kind = 'resource' AND b.scope_ref = r.id::text)
+               b.scope_kind = 'platform'
+               OR (b.scope_kind = 'object_kind' AND b.scope_ref = 'resource')
+               OR (b.scope_kind = 'object_type' AND b.scope_ref = 'resource:' || r.kind)
+               OR (b.scope_kind = 'object' AND b.scope_ref = r.id::text)
              LEFT JOIN roles role ON b.grant_kind = 'role' AND role.id = b.grant_id
              WHERE ($2::uuid IS NULL OR r.tenant_id = $2)
                AND ($3::text IS NULL OR r.kind = $3)
@@ -519,9 +562,10 @@ pub async fn entity_access(
            SELECT COUNT(*)
            FROM bindings b
            JOIN resources r ON
-             b.scope_kind = 'all'
-             OR (b.scope_kind = 'resource_kind' AND b.scope_ref = r.kind)
-             OR (b.scope_kind = 'resource' AND b.scope_ref = r.id::text)
+             b.scope_kind = 'platform'
+             OR (b.scope_kind = 'object_kind' AND b.scope_ref = 'resource')
+             OR (b.scope_kind = 'object_type' AND b.scope_ref = 'resource:' || r.kind)
+             OR (b.scope_kind = 'object' AND b.scope_ref = r.id::text)
            WHERE ($2::uuid IS NULL OR r.tenant_id = $2)
              AND ($3::text IS NULL OR r.kind = $3)
              AND ($4::text IS NULL OR b.effect = $4)
@@ -583,9 +627,10 @@ pub async fn resource_access(
                     e.tenant_id AS entity_tenant_id, 'direct'::text AS via
              FROM policy_bindings pb
              JOIN entities e ON pb.subject_kind = 'entity' AND e.id = pb.subject_id
-             WHERE pb.scope_kind = 'all'
-                OR (pb.scope_kind = 'resource_kind' AND pb.scope_ref = $1)
-                OR (pb.scope_kind = 'resource' AND pb.scope_ref = $2)
+             WHERE pb.scope_kind = 'platform'
+                OR (pb.scope_kind = 'object_kind' AND pb.scope_ref = 'resource')
+                OR (pb.scope_kind = 'object_type' AND pb.scope_ref = 'resource:' || $1)
+                OR (pb.scope_kind = 'object' AND pb.scope_ref = $2)
              UNION ALL
              SELECT pb.*, e.id AS entity_id, e.name AS entity_name, e.kind AS entity_kind,
                     e.tenant_id AS entity_tenant_id, ('group:' || g.name)::text AS via
@@ -593,9 +638,10 @@ pub async fn resource_access(
              JOIN groups g ON pb.subject_kind = 'group' AND g.id = pb.subject_id
              JOIN group_members gm ON gm.group_id = g.id
              JOIN entities e ON e.id = gm.entity_id
-             WHERE pb.scope_kind = 'all'
-                OR (pb.scope_kind = 'resource_kind' AND pb.scope_ref = $1)
-                OR (pb.scope_kind = 'resource' AND pb.scope_ref = $2)
+             WHERE pb.scope_kind = 'platform'
+                OR (pb.scope_kind = 'object_kind' AND pb.scope_ref = 'resource')
+                OR (pb.scope_kind = 'object_type' AND pb.scope_ref = 'resource:' || $1)
+                OR (pb.scope_kind = 'object' AND pb.scope_ref = $2)
            ), filtered AS (
              SELECT c.*, role.id AS role_id, role.name AS role_name
              FROM covered c
@@ -779,9 +825,10 @@ async fn subject_access(
                     role.id AS role_id, role.name AS role_name
              FROM bindings b
              JOIN resources r ON
-               b.scope_kind = 'all'
-               OR (b.scope_kind = 'resource_kind' AND b.scope_ref = r.kind)
-               OR (b.scope_kind = 'resource' AND b.scope_ref = r.id::text)
+               b.scope_kind = 'platform'
+               OR (b.scope_kind = 'object_kind' AND b.scope_ref = 'resource')
+               OR (b.scope_kind = 'object_type' AND b.scope_ref = 'resource:' || r.kind)
+               OR (b.scope_kind = 'object' AND b.scope_ref = r.id::text)
              LEFT JOIN roles role ON b.grant_kind = 'role' AND role.id = b.grant_id
              WHERE ($3::uuid IS NULL OR r.tenant_id = $3)
                AND ($4::text IS NULL OR r.kind = $4)
@@ -1052,25 +1099,30 @@ pub async fn effective_capabilities(
 pub async fn audit_logs(
     pool: &PgPool,
     params: crate::models::access::AuditQuery,
+    allowed_tenant_ids: Option<Vec<Uuid>>,
 ) -> Result<AuditLogResponse, AppError> {
     let limit = params.limit.clamp(1, 200);
     let offset = params.offset.max(0);
     let items = sqlx::query_as::<_, AuditLogItem>(
-        r#"SELECT id, entity_id, event, outcome, details, created_at
+        r#"SELECT id, entity_id, tenant_id, event, outcome, details, created_at
            FROM audit_logs
            WHERE ($1::uuid IS NULL OR entity_id = $1)
              AND ($2::text IS NULL OR event = $2)
              AND ($3::text IS NULL OR outcome = $3)
              AND ($4::timestamptz IS NULL OR created_at >= $4)
              AND ($5::timestamptz IS NULL OR created_at < $5)
+             AND ($6::uuid IS NULL OR tenant_id = $6)
+             AND ($7::uuid[] IS NULL OR tenant_id = ANY($7))
            ORDER BY created_at DESC
-           LIMIT $6 OFFSET $7"#,
+           LIMIT $8 OFFSET $9"#,
     )
     .bind(params.entity_id)
     .bind(params.event.clone())
     .bind(params.outcome.clone())
     .bind(params.from)
     .bind(params.to)
+    .bind(params.tenant_id)
+    .bind(allowed_tenant_ids.as_deref())
     .bind(limit)
     .bind(offset)
     .fetch_all(pool)
@@ -1083,17 +1135,56 @@ pub async fn audit_logs(
              AND ($2::text IS NULL OR event = $2)
              AND ($3::text IS NULL OR outcome = $3)
              AND ($4::timestamptz IS NULL OR created_at >= $4)
-             AND ($5::timestamptz IS NULL OR created_at < $5)"#,
+             AND ($5::timestamptz IS NULL OR created_at < $5)
+             AND ($6::uuid IS NULL OR tenant_id = $6)
+             AND ($7::uuid[] IS NULL OR tenant_id = ANY($7))"#,
     )
     .bind(params.entity_id)
     .bind(params.event)
     .bind(params.outcome)
     .bind(params.from)
     .bind(params.to)
+    .bind(params.tenant_id)
+    .bind(allowed_tenant_ids.as_deref())
     .fetch_one(pool)
     .await
     .map_err(db_err)?;
     Ok(AuditLogResponse { items, total })
+}
+
+pub async fn tenant_ids_for_capability(
+    pool: &PgPool,
+    entity_id: Uuid,
+    capability_name: &str,
+) -> Result<Vec<Uuid>, AppError> {
+    sqlx::query_scalar(
+        r#"SELECT DISTINCT pb.scope_ref::uuid
+           FROM policy_bindings pb
+           WHERE (
+               (pb.subject_kind = 'entity' AND pb.subject_id = $1)
+               OR (pb.subject_kind = 'group' AND pb.subject_id IN (
+                   SELECT group_id FROM group_members WHERE entity_id = $1
+               ))
+           )
+             AND pb.effect = 'allow'
+             AND pb.scope_kind = 'tenant'
+             AND pb.scope_ref IS NOT NULL
+             AND (
+               (pb.grant_kind = 'capability' AND pb.grant_id IN (
+                   SELECT id FROM capabilities WHERE name = $2
+               ))
+               OR (pb.grant_kind = 'role' AND pb.grant_id IN (
+                   SELECT rc.role_id FROM role_capabilities rc
+                   JOIN capabilities c ON c.id = rc.capability_id
+                   WHERE c.name = $2
+               ))
+             )"#,
+    )
+    .bind(entity_id)
+    .bind(capability_name)
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)
 }
 
 pub async fn orphan_policies(
@@ -1185,14 +1276,18 @@ pub async fn unprotected_resources(
              AND ($2::text IS NULL OR kind = $2)
              AND NOT EXISTS (
                SELECT 1 FROM policy_bindings pb
-               WHERE pb.scope_kind = 'resource' AND pb.scope_ref = r.id::text
+               WHERE pb.scope_kind = 'object' AND pb.scope_ref = r.id::text
              )
              AND NOT EXISTS (
                SELECT 1 FROM policy_bindings pb
-               WHERE pb.scope_kind = 'resource_kind' AND pb.scope_ref = r.kind
+               WHERE pb.scope_kind = 'object_type' AND pb.scope_ref = 'resource:' || r.kind
              )
              AND NOT EXISTS (
-               SELECT 1 FROM policy_bindings pb WHERE pb.scope_kind = 'all'
+               SELECT 1 FROM policy_bindings pb
+               WHERE pb.scope_kind = 'object_kind' AND pb.scope_ref = 'resource'
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM policy_bindings pb WHERE pb.scope_kind = 'platform'
              )
            ORDER BY created_at DESC
            LIMIT $3 OFFSET $4"#,
@@ -1211,14 +1306,18 @@ pub async fn unprotected_resources(
              AND ($2::text IS NULL OR kind = $2)
              AND NOT EXISTS (
                SELECT 1 FROM policy_bindings pb
-               WHERE pb.scope_kind = 'resource' AND pb.scope_ref = r.id::text
+               WHERE pb.scope_kind = 'object' AND pb.scope_ref = r.id::text
              )
              AND NOT EXISTS (
                SELECT 1 FROM policy_bindings pb
-               WHERE pb.scope_kind = 'resource_kind' AND pb.scope_ref = r.kind
+               WHERE pb.scope_kind = 'object_type' AND pb.scope_ref = 'resource:' || r.kind
              )
              AND NOT EXISTS (
-               SELECT 1 FROM policy_bindings pb WHERE pb.scope_kind = 'all'
+               SELECT 1 FROM policy_bindings pb
+               WHERE pb.scope_kind = 'object_kind' AND pb.scope_ref = 'resource'
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM policy_bindings pb WHERE pb.scope_kind = 'platform'
              )"#,
     )
     .bind(params.tenant_id)
@@ -1390,7 +1489,7 @@ pub async fn load_bindings_for_entity(
     entity_id: Uuid,
 ) -> Result<Vec<PolicyBinding>, AppError> {
     sqlx::query_as::<_, PolicyBinding>(
-        r#"SELECT pb.id, pb.subject_kind, pb.subject_id, pb.grant_kind, pb.grant_id,
+        r#"SELECT pb.id, pb.tenant_id, pb.subject_kind, pb.subject_id, pb.grant_kind, pb.grant_id,
                   pb.scope_kind, pb.scope_ref, pb.effect, pb.conditions, pb.created_at
            FROM policy_bindings pb
            WHERE

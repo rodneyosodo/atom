@@ -3,24 +3,47 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{
+    authz::conditions::conditions_match,
     error::AppError,
     models::{
         access::{
             AuthzExplainResponse, EvaluatedBinding, ExplainCapability, ExplainSubject,
             ResourceSummary,
         },
-        enums::{Effect, EntityStatus, GrantKind, ScopeKind},
+        enums::{Effect, EntityKind, EntityStatus, GrantKind, ScopeKind, TenantStatus},
         policy::{AuthzRequest, AuthzResponse, PolicyBinding},
     },
 };
+use serde_json::json;
 
 use super::repo;
 
-/// Generic protected object resolved from either `resources` or `tenants`.
-/// `kind` participates in scope/capability matching; `id` is what
-/// `scope_kind = resource` policies match against (as text).
+struct EntityEvalContext {
+    id: Uuid,
+    kind: EntityKind,
+    tenant_id: Option<Uuid>,
+    status: EntityStatus,
+    attributes: Value,
+}
+
+struct TenantEvalContext {
+    id: Uuid,
+    status: TenantStatus,
+    attributes: Value,
+}
+
+/// Generic protected object resolved from `resources`, `tenants`, or any
+/// other table that backs an `object_kind`.
+///
+/// - `coarse_kind` is the value of the canonical `object_kind` enum
+///   (e.g., `"resource"`, `"tenant"`, `"entity"`). Used by `scope_kind = object_kind`.
+/// - `kind` is the sub-kind for objects that have one (e.g., `"channel"` for
+///   resources). Tenants have no sub-kind, so `kind` mirrors `coarse_kind`.
+///   Used by capability lookup and by `scope_kind = object_type`.
+/// - `id` is what `scope_kind = object` policies match against (as text).
 pub(crate) struct ProtectedObject {
     pub id: Uuid,
+    pub coarse_kind: String,
     pub kind: String,
     pub name: Option<String>,
     pub tenant_id: Option<Uuid>,
@@ -48,15 +71,17 @@ pub(crate) async fn resolve_object(
         return match kind {
             "resource" => load_resource(pool, id).await,
             "tenant" => {
-                let row = sqlx::query(
-                    "SELECT id, name, attributes FROM tenants WHERE id = $1 AND status <> 'deleted'",
-                )
-                .bind(id)
-                .fetch_optional(pool)
-                .await
-                .map_err(AppError::Database)?;
+                // M3: load the tenant regardless of status so the engine can
+                // deny with a state-aware reason ("tenant is frozen" etc.)
+                // rather than a generic "not found".
+                let row = sqlx::query("SELECT id, name, attributes FROM tenants WHERE id = $1")
+                    .bind(id)
+                    .fetch_optional(pool)
+                    .await
+                    .map_err(AppError::Database)?;
                 Ok(row.map(|r| ProtectedObject {
                     id,
+                    coarse_kind: "tenant".to_string(),
                     kind: "tenant".to_string(),
                     name: r.try_get::<String, _>("name").ok(),
                     tenant_id: Some(id),
@@ -65,8 +90,9 @@ pub(crate) async fn resolve_object(
                         .unwrap_or(Value::Object(Default::default())),
                 }))
             }
+            "entity" => load_entity_as_object(pool, id).await,
             other => Err(AppError::bad_request(format!(
-                "unsupported object_kind '{other}' (supported: resource, tenant)"
+                "unsupported object_kind '{other}' (supported: resource, tenant, entity)"
             ))),
         };
     }
@@ -75,6 +101,36 @@ pub(crate) async fn resolve_object(
         AppError::bad_request("authz check requires either resource_id or (object_kind, object_id)")
     })?;
     load_resource(pool, resource_id).await
+}
+
+/// Resolve an entity used as a protected object (AZ-17). The entity's row
+/// supplies the sub-kind (`human` / `device` / `service` / `workload` /
+/// `application`), which combined with the coarse `entity` kind yields the
+/// namespaced `object_type` (e.g., `entity:device`).
+async fn load_entity_as_object(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<ProtectedObject>, AppError> {
+    use sqlx::Row;
+    let row = sqlx::query(
+        "SELECT id, kind, name, tenant_id, attributes FROM entities WHERE id = $1 AND status <> 'inactive'",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(AppError::Database)?;
+    Ok(row.map(|r| ProtectedObject {
+        id,
+        coarse_kind: "entity".to_string(),
+        kind: r
+            .try_get::<String, _>("kind")
+            .unwrap_or_else(|_| String::new()),
+        name: r.try_get::<String, _>("name").ok(),
+        tenant_id: r.try_get::<Option<Uuid>, _>("tenant_id").unwrap_or(None),
+        attributes: r
+            .try_get::<Value, _>("attributes")
+            .unwrap_or(Value::Object(Default::default())),
+    }))
 }
 
 async fn load_resource(pool: &PgPool, id: Uuid) -> Result<Option<ProtectedObject>, AppError> {
@@ -87,6 +143,7 @@ async fn load_resource(pool: &PgPool, id: Uuid) -> Result<Option<ProtectedObject
             .map_err(AppError::Database)?;
     Ok(row.map(|r| ProtectedObject {
         id,
+        coarse_kind: "resource".to_string(),
         kind: r
             .try_get::<String, _>("kind")
             .unwrap_or_else(|_| String::new()),
@@ -101,55 +158,58 @@ async fn load_resource(pool: &PgPool, id: Uuid) -> Result<Option<ProtectedObject
 pub async fn evaluate(pool: &PgPool, req: &AuthzRequest) -> Result<AuthzResponse, AppError> {
     use sqlx::Row;
 
-    let entity_row = sqlx::query("SELECT attributes, status FROM entities WHERE id = $1")
-        .bind(req.subject_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(AppError::Database)?;
+    let entity_row =
+        sqlx::query("SELECT id, kind, tenant_id, attributes, status FROM entities WHERE id = $1")
+            .bind(req.subject_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(AppError::Database)?;
 
     let entity_row = match entity_row {
         Some(r) => r,
-        None => {
-            return Ok(AuthzResponse {
-                allowed: false,
-                reason: "subject not found".to_string(),
-            });
-        }
+        None => return Ok(AuthzResponse::deny("subject not found")),
     };
 
     let entity_status: EntityStatus = entity_row.try_get("status").map_err(AppError::Database)?;
     if entity_status != EntityStatus::Active {
-        return Ok(AuthzResponse {
-            allowed: false,
-            reason: "subject is not active".to_string(),
-        });
+        return Ok(AuthzResponse::deny("subject is not active"));
     }
-    let entity_attrs: Value = entity_row
-        .try_get("attributes")
-        .map_err(AppError::Database)?;
+    let entity_ctx = EntityEvalContext {
+        id: entity_row.try_get("id").map_err(AppError::Database)?,
+        kind: entity_row.try_get("kind").map_err(AppError::Database)?,
+        tenant_id: entity_row
+            .try_get("tenant_id")
+            .map_err(AppError::Database)?,
+        status: entity_status,
+        attributes: entity_row
+            .try_get("attributes")
+            .map_err(AppError::Database)?,
+    };
 
     let object = match resolve_object(pool, req).await? {
         Some(obj) => obj,
-        None => {
-            return Ok(AuthzResponse {
-                allowed: false,
-                reason: object_not_found_reason(req),
-            });
-        }
+        None => return Ok(AuthzResponse::deny(object_not_found_reason(req))),
     };
+
+    // M3: deny when the object's owning tenant is not active. Skips for
+    // platform/global objects (tenant_id = None).
+    if let Some(deny) = check_tenant_lifecycle(pool, &object).await? {
+        return Ok(deny);
+    }
 
     let cap_id = repo::find_capability_by_name(pool, &req.action, &object.kind).await?;
     let cap_id = match cap_id {
         Some(id) => id,
         None => {
-            return Ok(AuthzResponse {
-                allowed: false,
-                reason: format!("unknown action '{}'", req.action),
-            });
+            return Ok(AuthzResponse::deny(format!(
+                "unknown action '{}'",
+                req.action
+            )))
         }
     };
 
-    let eval_ctx = build_context(&entity_attrs, &object.attributes, &req.context);
+    let tenant_ctx = load_tenant_context(pool, object.tenant_id).await?;
+    let eval_ctx = build_context(&entity_ctx, &object, tenant_ctx.as_ref(), &req.context);
     let bindings = repo::load_bindings_for_entity(pool, req.subject_id).await?;
 
     // Collect all role IDs referenced by bindings and batch-load their capabilities.
@@ -164,10 +224,17 @@ pub async fn evaluate(pool: &PgPool, req: &AuthzRequest) -> Result<AuthzResponse
     let role_caps = repo::capability_ids_for_roles(pool, &role_ids).await?;
 
     let object_id_str = object.id.to_string();
+    let object_tenant_id_str = object.tenant_id.map(|t| t.to_string());
     let mut has_allow = false;
 
     for binding in &bindings {
-        if !scope_matches(binding, &object_id_str, &object.kind) {
+        if !scope_matches(
+            binding,
+            &object_id_str,
+            &object.coarse_kind,
+            &object.kind,
+            object_tenant_id_str.as_deref(),
+        ) {
             continue;
         }
 
@@ -189,10 +256,10 @@ pub async fn evaluate(pool: &PgPool, req: &AuthzRequest) -> Result<AuthzResponse
 
         match binding.effect {
             Effect::Deny => {
-                return Ok(AuthzResponse {
-                    allowed: false,
-                    reason: format!("explicitly denied by policy {}", binding.id),
-                });
+                return Ok(AuthzResponse::deny(format!(
+                    "explicitly denied by policy {}",
+                    binding.id
+                )));
             }
             Effect::Allow => {
                 has_allow = true;
@@ -201,27 +268,22 @@ pub async fn evaluate(pool: &PgPool, req: &AuthzRequest) -> Result<AuthzResponse
     }
 
     if has_allow {
-        Ok(AuthzResponse {
-            allowed: true,
-            reason: "allowed".to_string(),
-        })
+        Ok(AuthzResponse::allow())
     } else {
-        Ok(AuthzResponse {
-            allowed: false,
-            reason: "no matching allow policy".to_string(),
-        })
+        Ok(AuthzResponse::deny("no matching allow policy"))
     }
 }
 
 pub async fn explain(pool: &PgPool, req: &AuthzRequest) -> Result<AuthzExplainResponse, AppError> {
     use sqlx::Row;
 
-    let entity_row =
-        sqlx::query("SELECT id, name, kind, status, attributes FROM entities WHERE id = $1")
-            .bind(req.subject_id)
-            .fetch_optional(pool)
-            .await
-            .map_err(AppError::Database)?;
+    let entity_row = sqlx::query(
+        "SELECT id, name, kind, tenant_id, status, attributes FROM entities WHERE id = $1",
+    )
+    .bind(req.subject_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(AppError::Database)?;
 
     let entity_row = match entity_row {
         Some(row) => row,
@@ -244,9 +306,17 @@ pub async fn explain(pool: &PgPool, req: &AuthzRequest) -> Result<AuthzExplainRe
         kind: entity_row.try_get("kind").map_err(AppError::Database)?,
         status: entity_row.try_get("status").map_err(AppError::Database)?,
     };
-    let entity_attrs: Value = entity_row
-        .try_get("attributes")
-        .map_err(AppError::Database)?;
+    let entity_ctx = EntityEvalContext {
+        id: subject.id,
+        kind: subject.kind.clone(),
+        tenant_id: entity_row
+            .try_get("tenant_id")
+            .map_err(AppError::Database)?,
+        status: subject.status.clone(),
+        attributes: entity_row
+            .try_get("attributes")
+            .map_err(AppError::Database)?,
+    };
 
     if subject.status != EntityStatus::Active {
         return Ok(AuthzExplainResponse {
@@ -281,7 +351,21 @@ pub async fn explain(pool: &PgPool, req: &AuthzRequest) -> Result<AuthzExplainRe
         name: object.name.clone(),
         tenant_id: object.tenant_id,
     };
-    let resource_attrs: Value = object.attributes.clone();
+    let tenant_ctx = load_tenant_context(pool, object.tenant_id).await?;
+
+    // M3: tenant-lifecycle short-circuit, surfaced through explain so callers
+    // see "tenant is frozen" rather than a confusing scope_mismatch loop.
+    if let Some(deny) = check_tenant_lifecycle(pool, &object).await? {
+        return Ok(AuthzExplainResponse {
+            allowed: false,
+            reason: deny.reason,
+            subject: Some(subject),
+            resource: Some(resource),
+            capability: None,
+            matched_binding: None,
+            evaluated_bindings: Vec::new(),
+        });
+    }
 
     let cap_row = sqlx::query(
         r#"SELECT id, name, resource_kind FROM capabilities
@@ -317,7 +401,7 @@ pub async fn explain(pool: &PgPool, req: &AuthzRequest) -> Result<AuthzExplainRe
     };
 
     let rows = sqlx::query(
-        r#"SELECT pb.id, pb.subject_kind, pb.subject_id, pb.grant_kind, pb.grant_id,
+        r#"SELECT pb.id, pb.tenant_id, pb.subject_kind, pb.subject_id, pb.grant_kind, pb.grant_id,
                   pb.scope_kind, pb.scope_ref, pb.effect, pb.conditions, pb.created_at,
                   role.name AS role_name,
                   CASE
@@ -346,6 +430,7 @@ pub async fn explain(pool: &PgPool, req: &AuthzRequest) -> Result<AuthzExplainRe
             Ok((
                 PolicyBinding {
                     id: row.try_get("id").map_err(AppError::Database)?,
+                    tenant_id: row.try_get("tenant_id").map_err(AppError::Database)?,
                     subject_kind: row.try_get("subject_kind").map_err(AppError::Database)?,
                     subject_id: row.try_get("subject_id").map_err(AppError::Database)?,
                     grant_kind: row.try_get("grant_kind").map_err(AppError::Database)?,
@@ -373,15 +458,22 @@ pub async fn explain(pool: &PgPool, req: &AuthzRequest) -> Result<AuthzExplainRe
         .collect();
     let role_caps = repo::capability_ids_for_roles(pool, &role_ids).await?;
 
-    let eval_ctx = build_context(&entity_attrs, &resource_attrs, &req.context);
+    let eval_ctx = build_context(&entity_ctx, &object, tenant_ctx.as_ref(), &req.context);
     let object_id_str = object.id.to_string();
+    let object_tenant_id_str = object.tenant_id.map(|t| t.to_string());
     let mut evaluated = Vec::new();
     let mut allow_match = None;
 
     for (binding, role_name, via) in bindings {
         let mut result = "skipped".to_string();
         let mut skip_reason = None;
-        if !scope_matches(&binding, &object_id_str, &resource.kind) {
+        if !scope_matches(
+            &binding,
+            &object_id_str,
+            &object.coarse_kind,
+            &resource.kind,
+            object_tenant_id_str.as_deref(),
+        ) {
             skip_reason = Some("scope_mismatch".to_string());
         } else {
             let grant_matches = match binding.grant_kind {
@@ -460,70 +552,186 @@ pub async fn explain(pool: &PgPool, req: &AuthzRequest) -> Result<AuthzExplainRe
     }
 }
 
+/// M3 / TEN-14 / AZ-16 / AUD-8: deny the request when the object's owning
+/// tenant is not `active`. Returns `Ok(None)` for platform/global objects and
+/// for active tenants. The deny carries `tenant_id` + `tenant_status` in
+/// `details` so audit can record the lifecycle reason.
+async fn check_tenant_lifecycle(
+    pool: &PgPool,
+    object: &ProtectedObject,
+) -> Result<Option<AuthzResponse>, AppError> {
+    use sqlx::Row;
+
+    let Some(tenant_id) = object.tenant_id else {
+        return Ok(None);
+    };
+
+    let row = sqlx::query("SELECT status FROM tenants WHERE id = $1")
+        .bind(tenant_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(AppError::Database)?;
+
+    let Some(row) = row else {
+        return Ok(None);
+    };
+
+    let status: TenantStatus = row.try_get("status").map_err(AppError::Database)?;
+    let state = match status {
+        TenantStatus::Active => return Ok(None),
+        TenantStatus::Inactive => "inactive",
+        TenantStatus::Frozen => "frozen",
+        TenantStatus::Deleted => "deleted",
+    };
+
+    Ok(Some(AuthzResponse::deny_with_details(
+        format!("tenant is {state}"),
+        json!({
+            "tenant_id": tenant_id,
+            "tenant_status": state,
+        }),
+    )))
+}
+
+async fn load_tenant_context(
+    pool: &PgPool,
+    tenant_id: Option<Uuid>,
+) -> Result<Option<TenantEvalContext>, AppError> {
+    use sqlx::Row;
+
+    let Some(tenant_id) = tenant_id else {
+        return Ok(None);
+    };
+
+    let row = sqlx::query("SELECT id, status, attributes FROM tenants WHERE id = $1")
+        .bind(tenant_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(AppError::Database)?;
+
+    row.map(|row| {
+        Ok(TenantEvalContext {
+            id: row.try_get("id").map_err(AppError::Database)?,
+            status: row.try_get("status").map_err(AppError::Database)?,
+            attributes: row.try_get("attributes").map_err(AppError::Database)?,
+        })
+    })
+    .transpose()
+}
+
 fn object_not_found_reason(req: &AuthzRequest) -> String {
     match req.object_kind.as_deref() {
         Some("tenant") => "tenant not found".to_string(),
+        Some("entity") => "entity not found".to_string(),
         Some(kind) => format!("{kind} not found"),
         None => "resource not found".to_string(),
     }
 }
 
-fn scope_matches(binding: &PolicyBinding, resource_id: &str, resource_kind: &str) -> bool {
-    match binding.scope_kind {
-        ScopeKind::All => true,
-        ScopeKind::Resource => binding
-            .scope_ref
-            .as_deref()
-            .map(|r| r == resource_id)
-            .unwrap_or(false),
-        ScopeKind::ResourceKind => binding
-            .scope_ref
-            .as_deref()
-            .map(|k| k == resource_kind)
-            .unwrap_or(false),
-    }
-}
-
-fn build_context(entity_attrs: &Value, resource_attrs: &Value, extra: &Value) -> Value {
-    serde_json::json!({
-        "entity": { "attributes": entity_attrs },
-        "resource": { "attributes": resource_attrs },
-        "context": extra,
-    })
-}
-
-/// Evaluate flat-map ABAC conditions against the evaluation context.
-/// Keys are dot-paths; all entries must match (AND logic).
-fn conditions_match(conditions: &Value, ctx: &Value) -> bool {
-    let map = match conditions.as_object() {
-        Some(m) => m,
-        None => return true,
-    };
-
-    if map.is_empty() {
-        return true;
-    }
-
-    for (path, expected) in map {
-        if resolve_path(ctx, path) != Some(expected) {
+/// Match a policy binding's scope against the protected object.
+///
+/// - `Platform`: matches every object (super-admin / inheritance lands in M4).
+/// - `Tenant`: requires the object to live inside the referenced tenant. Full
+///   tenant-inheritance evaluation lands in M3/M4. For M1 we already return a
+///   correct local match (object's tenant_id equals scope_ref UUID); platform
+///   inheritance into tenants is M4.
+/// - `ObjectKind`: scope_ref equals the coarse object kind (e.g., `"resource"`).
+/// - `ObjectType`: scope_ref is namespaced (`"<coarse>:<sub>"`) and must match
+///   both halves.
+/// - `Object`: scope_ref equals the object's UUID as text.
+fn scope_matches(
+    binding: &PolicyBinding,
+    object_id: &str,
+    coarse_kind: &str,
+    sub_kind: &str,
+    object_tenant_id: Option<&str>,
+) -> bool {
+    if let Some(policy_tenant_id) = binding.tenant_id {
+        if object_tenant_id.and_then(|id| id.parse::<Uuid>().ok()) != Some(policy_tenant_id) {
             return false;
         }
     }
 
-    true
+    match binding.scope_kind {
+        ScopeKind::Platform => true,
+        ScopeKind::Tenant => match (binding.scope_ref.as_deref(), object_tenant_id) {
+            (Some(scope_ref), Some(tenant)) => scope_ref == tenant,
+            _ => false,
+        },
+        ScopeKind::ObjectKind => binding
+            .scope_ref
+            .as_deref()
+            .map(|k| k == coarse_kind)
+            .unwrap_or(false),
+        ScopeKind::ObjectType => binding
+            .scope_ref
+            .as_deref()
+            .and_then(|s| s.split_once(':'))
+            .map(|(prefix, sub)| prefix == coarse_kind && sub == sub_kind)
+            .unwrap_or(false),
+        ScopeKind::Object => binding
+            .scope_ref
+            .as_deref()
+            .map(|r| r == object_id)
+            .unwrap_or(false),
+    }
 }
 
-fn resolve_path<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
-    let mut current = root;
-    for segment in path.split('.') {
-        current = current.get(segment)?;
+fn build_context(
+    entity: &EntityEvalContext,
+    object: &ProtectedObject,
+    tenant: Option<&TenantEvalContext>,
+    extra: &Value,
+) -> Value {
+    let object_type = namespaced_object_type(object);
+    let tenant_value = tenant
+        .map(|tenant| {
+            json!({
+                "id": tenant.id,
+                "status": tenant.status,
+                "attributes": tenant.attributes,
+            })
+        })
+        .unwrap_or(Value::Null);
+
+    serde_json::json!({
+        "entity": {
+            "id": entity.id,
+            "kind": entity.kind,
+            "tenant_id": entity.tenant_id,
+            "status": entity.status,
+            "attributes": entity.attributes,
+        },
+        "resource": {
+            "id": object.id,
+            "kind": object.kind,
+            "tenant_id": object.tenant_id,
+            "attributes": object.attributes,
+        },
+        "object": {
+            "id": object.id,
+            "kind": object.coarse_kind,
+            "type": object_type,
+            "tenant_id": object.tenant_id,
+            "attributes": object.attributes,
+        },
+        "tenant": tenant_value,
+        "context": extra,
+    })
+}
+
+fn namespaced_object_type(object: &ProtectedObject) -> Value {
+    match object.coarse_kind.as_str() {
+        "entity" | "resource" => Value::String(format!("{}:{}", object.coarse_kind, object.kind)),
+        "group" | "tenant" | "role" | "policy" | "credential" | "audit_log" => Value::Null,
+        _ => Value::Null,
     }
-    Some(current)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::authz::conditions::resolve_path;
     use crate::models::{
         enums::{Effect, GrantKind, ScopeKind, SubjectKind},
         policy::PolicyBinding,
@@ -540,6 +748,7 @@ mod tests {
     ) -> PolicyBinding {
         PolicyBinding {
             id: Uuid::new_v4(),
+            tenant_id: None,
             subject_kind: SubjectKind::Entity,
             subject_id: Uuid::new_v4(),
             grant_kind,
@@ -629,83 +838,226 @@ mod tests {
         assert!(!conditions_match(&conditions, &ctx));
     }
 
+    #[test]
+    fn build_context_includes_entity_object_resource_tenant_and_request_fields() {
+        let tenant_id = Uuid::new_v4();
+        let entity_id = Uuid::new_v4();
+        let object_id = Uuid::new_v4();
+        let entity = EntityEvalContext {
+            id: entity_id,
+            kind: EntityKind::Human,
+            tenant_id: None,
+            status: EntityStatus::Active,
+            attributes: json!({"department": "ops"}),
+        };
+        let object = ProtectedObject {
+            id: object_id,
+            coarse_kind: "resource".into(),
+            kind: "channel".into(),
+            name: Some("telemetry".into()),
+            tenant_id: Some(tenant_id),
+            attributes: json!({"tags": ["production"]}),
+        };
+        let tenant = TenantEvalContext {
+            id: tenant_id,
+            status: TenantStatus::Active,
+            attributes: json!({"region": "eu"}),
+        };
+
+        let ctx = build_context(
+            &entity,
+            &object,
+            Some(&tenant),
+            &json!({"mfa_verified": true}),
+        );
+
+        assert_eq!(ctx["entity"]["id"], json!(entity_id));
+        assert_eq!(ctx["entity"]["kind"], "human");
+        assert_eq!(ctx["object"]["kind"], "resource");
+        assert_eq!(ctx["object"]["type"], "resource:channel");
+        assert_eq!(ctx["resource"]["kind"], "channel");
+        assert_eq!(ctx["tenant"]["id"], json!(tenant_id));
+        assert_eq!(ctx["tenant"]["status"], "active");
+        assert_eq!(ctx["context"]["mfa_verified"], true);
+    }
+
     // ─── scope_matches ────────────────────────────────────────────────────────
 
     #[test]
-    fn scope_all_matches_everything() {
-        let b = make_binding(ScopeKind::All, None, GrantKind::Capability, Effect::Allow);
-        assert!(scope_matches(&b, "any-uuid", "any-kind"));
-    }
-
-    #[test]
-    fn scope_resource_kind_matches_correct_kind() {
+    fn scope_platform_matches_everything() {
         let b = make_binding(
-            ScopeKind::ResourceKind,
-            Some("channel"),
-            GrantKind::Capability,
-            Effect::Allow,
-        );
-        assert!(scope_matches(&b, "some-uuid", "channel"));
-        assert!(!scope_matches(&b, "some-uuid", "device"));
-    }
-
-    #[test]
-    fn scope_specific_resource_matches_by_id() {
-        let res_id = Uuid::new_v4().to_string();
-        let b = make_binding(
-            ScopeKind::Resource,
-            Some(&res_id),
-            GrantKind::Capability,
-            Effect::Allow,
-        );
-        assert!(scope_matches(&b, &res_id, "any-kind"));
-        assert!(!scope_matches(&b, "other-uuid", "any-kind"));
-    }
-
-    #[test]
-    fn scope_resource_none_scope_ref_never_matches() {
-        let b = make_binding(
-            ScopeKind::Resource,
+            ScopeKind::Platform,
             None,
             GrantKind::Capability,
             Effect::Allow,
         );
-        assert!(!scope_matches(&b, "any-id", "any-kind"));
+        assert!(scope_matches(&b, "any-uuid", "resource", "channel", None));
+        assert!(scope_matches(
+            &b,
+            "any-uuid",
+            "tenant",
+            "tenant",
+            Some("any-tenant")
+        ));
     }
 
-    // ─── tenant scope matching ────────────────────────────────────────────────
-
     #[test]
-    fn scope_resource_kind_matches_tenant_kind() {
+    fn scope_object_kind_matches_coarse_only() {
         let b = make_binding(
-            ScopeKind::ResourceKind,
-            Some("tenant"),
+            ScopeKind::ObjectKind,
+            Some("resource"),
             GrantKind::Capability,
             Effect::Allow,
         );
-        let tenant_id = Uuid::new_v4().to_string();
-        assert!(scope_matches(&b, &tenant_id, "tenant"));
-        assert!(!scope_matches(&b, &tenant_id, "channel"));
+        assert!(scope_matches(&b, "uuid", "resource", "channel", None));
+        assert!(scope_matches(&b, "uuid", "resource", "device_config", None));
+        assert!(!scope_matches(&b, "uuid", "tenant", "tenant", None));
     }
 
     #[test]
-    fn scope_resource_matches_tenant_uuid() {
+    fn scope_object_type_requires_namespaced_match() {
+        let b = make_binding(
+            ScopeKind::ObjectType,
+            Some("resource:channel"),
+            GrantKind::Capability,
+            Effect::Allow,
+        );
+        assert!(scope_matches(&b, "uuid", "resource", "channel", None));
+        assert!(!scope_matches(
+            &b,
+            "uuid",
+            "resource",
+            "device_config",
+            None
+        ));
+        assert!(!scope_matches(&b, "uuid", "tenant", "channel", None));
+    }
+
+    #[test]
+    fn scope_object_type_rejects_bare_value() {
+        let b = make_binding(
+            ScopeKind::ObjectType,
+            Some("channel"),
+            GrantKind::Capability,
+            Effect::Allow,
+        );
+        assert!(!scope_matches(&b, "uuid", "resource", "channel", None));
+    }
+
+    #[test]
+    fn scope_object_matches_specific_id() {
+        let res_id = Uuid::new_v4().to_string();
+        let b = make_binding(
+            ScopeKind::Object,
+            Some(&res_id),
+            GrantKind::Capability,
+            Effect::Allow,
+        );
+        assert!(scope_matches(&b, &res_id, "resource", "channel", None));
+        assert!(!scope_matches(
+            &b,
+            "other-uuid",
+            "resource",
+            "channel",
+            None
+        ));
+    }
+
+    #[test]
+    fn scope_object_with_none_scope_ref_never_matches() {
+        let b = make_binding(
+            ScopeKind::Object,
+            None,
+            GrantKind::Capability,
+            Effect::Allow,
+        );
+        assert!(!scope_matches(&b, "any-id", "resource", "channel", None));
+    }
+
+    #[test]
+    fn scope_tenant_matches_when_tenant_ids_equal() {
         let tenant_id = Uuid::new_v4().to_string();
         let b = make_binding(
-            ScopeKind::Resource,
+            ScopeKind::Tenant,
             Some(&tenant_id),
             GrantKind::Capability,
             Effect::Allow,
         );
-        assert!(scope_matches(&b, &tenant_id, "tenant"));
-        let other = Uuid::new_v4().to_string();
-        assert!(!scope_matches(&b, &other, "tenant"));
+        assert!(scope_matches(
+            &b,
+            "any-uuid",
+            "resource",
+            "channel",
+            Some(&tenant_id)
+        ));
+        let other_tenant = Uuid::new_v4().to_string();
+        assert!(!scope_matches(
+            &b,
+            "any-uuid",
+            "resource",
+            "channel",
+            Some(&other_tenant)
+        ));
+        assert!(!scope_matches(&b, "any-uuid", "resource", "channel", None));
     }
 
     #[test]
-    fn scope_all_covers_tenant_objects() {
-        let b = make_binding(ScopeKind::All, None, GrantKind::Capability, Effect::Allow);
-        assert!(scope_matches(&b, &Uuid::new_v4().to_string(), "tenant"));
+    fn tenant_owned_binding_is_bound_to_policy_tenant() {
+        let tenant_id = Uuid::new_v4();
+        let other_tenant_id = Uuid::new_v4().to_string();
+        let mut b = make_binding(
+            ScopeKind::ObjectKind,
+            Some("resource"),
+            GrantKind::Capability,
+            Effect::Allow,
+        );
+        b.tenant_id = Some(tenant_id);
+
+        assert!(scope_matches(
+            &b,
+            "uuid",
+            "resource",
+            "channel",
+            Some(&tenant_id.to_string())
+        ));
+        assert!(!scope_matches(
+            &b,
+            "uuid",
+            "resource",
+            "channel",
+            Some(&other_tenant_id)
+        ));
+        assert!(!scope_matches(&b, "uuid", "resource", "channel", None));
+    }
+
+    // ─── ObjectKind enum sanity ───────────────────────────────────────────────
+
+    #[test]
+    fn object_kind_serialises_to_canonical_strings() {
+        use crate::models::enums::ObjectKind;
+        assert_eq!(ObjectKind::Entity.as_str(), "entity");
+        assert_eq!(ObjectKind::AuditLog.as_str(), "audit_log");
+        // round-trip
+        let v = serde_json::to_value(ObjectKind::AuditLog).unwrap();
+        assert_eq!(v, serde_json::json!("audit_log"));
+        let parsed: ObjectKind = serde_json::from_value(serde_json::json!("entity")).unwrap();
+        assert_eq!(parsed, ObjectKind::Entity);
+    }
+
+    #[test]
+    fn scope_kind_serde_round_trip() {
+        for (variant, canonical) in [
+            (ScopeKind::Platform, "platform"),
+            (ScopeKind::Tenant, "tenant"),
+            (ScopeKind::ObjectKind, "object_kind"),
+            (ScopeKind::ObjectType, "object_type"),
+            (ScopeKind::Object, "object"),
+        ] {
+            let v = serde_json::to_value(&variant).unwrap();
+            assert_eq!(v, serde_json::json!(canonical));
+            let parsed: ScopeKind = serde_json::from_value(v).unwrap();
+            assert_eq!(parsed, variant);
+        }
     }
 
     // ─── object_not_found_reason ──────────────────────────────────────────────
@@ -877,11 +1229,12 @@ mod db_tests {
         crate::authz::repo::create_policy(
             &pool,
             CreatePolicyBinding {
+                tenant_id: None,
                 subject_kind: SubjectKind::Entity,
                 subject_id: entity_id,
                 grant_kind: GrantKind::Capability,
                 grant_id: read_cap,
-                scope_kind: ScopeKind::Resource,
+                scope_kind: ScopeKind::Object,
                 scope_ref: Some(resource_id.to_string()),
                 effect: Effect::Allow,
                 conditions: json!({}),
@@ -913,7 +1266,8 @@ mod db_tests {
 
     #[tokio::test]
     #[ignore]
-    async fn deleted_tenant_resolves_as_not_found() {
+    async fn deleted_tenant_denies_with_lifecycle_reason() {
+        // M3: deleted tenants now resolve as a state-aware deny.
         let pool = pool().await;
         let t = crate::tenants::repo::create_tenant(
             &pool,
@@ -941,7 +1295,13 @@ mod db_tests {
         };
         let resp = evaluate(&pool, &req).await.expect("evaluate");
         assert!(!resp.allowed);
-        assert_eq!(resp.reason, "tenant not found");
+        assert_eq!(resp.reason, "tenant is deleted");
+        let details = resp.details.expect("M3 must surface lifecycle details");
+        assert_eq!(details["tenant_status"], "deleted");
+        assert_eq!(
+            details["tenant_id"],
+            serde_json::Value::String(t.id.to_string())
+        );
 
         let _ = sqlx::query("DELETE FROM tenants WHERE id = $1")
             .bind(t.id)

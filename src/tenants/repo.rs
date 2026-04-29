@@ -1,4 +1,4 @@
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::{
@@ -12,8 +12,47 @@ use crate::{
 const TENANT_COLS: &str =
     "id, name, route, status, tags, attributes, created_by, updated_by, created_at, updated_at";
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TenantAdminBootstrap {
+    pub tenant_id: Uuid,
+    pub creator_id: Uuid,
+    pub role_name: &'static str,
+    pub capabilities: [&'static str; 5],
+    pub scope_ref: String,
+}
+
+pub fn tenant_admin_bootstrap(tenant_id: Uuid, creator_id: Uuid) -> TenantAdminBootstrap {
+    TenantAdminBootstrap {
+        tenant_id,
+        creator_id,
+        role_name: "tenant-admin",
+        capabilities: [
+            "manage",
+            "audit.read",
+            "credential.manage",
+            "policy.manage",
+            "role.manage",
+        ],
+        scope_ref: tenant_id.to_string(),
+    }
+}
+
 pub async fn create_tenant(
     pool: &PgPool,
+    req: CreateTenant,
+    created_by: Option<Uuid>,
+) -> Result<Tenant, AppError> {
+    let mut tx = pool.begin().await.map_err(db_err)?;
+    let tenant = create_tenant_in_tx(&mut tx, req, created_by).await?;
+    if let Some(creator_id) = created_by {
+        bootstrap_tenant_admin(&mut tx, tenant_admin_bootstrap(tenant.id, creator_id)).await?;
+    }
+    tx.commit().await.map_err(db_err)?;
+    Ok(tenant)
+}
+
+async fn create_tenant_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
     req: CreateTenant,
     created_by: Option<Uuid>,
 ) -> Result<Tenant, AppError> {
@@ -34,9 +73,91 @@ pub async fn create_tenant(
     .bind(&req.tags)
     .bind(attrs)
     .bind(created_by)
-    .fetch_one(pool)
+    .fetch_one(&mut **tx)
     .await
     .map_err(db_err)
+}
+
+async fn bootstrap_tenant_admin(
+    tx: &mut Transaction<'_, Postgres>,
+    plan: TenantAdminBootstrap,
+) -> Result<(), AppError> {
+    use sqlx::Row;
+
+    let role_id = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO roles (id, name, tenant_id, description)
+           VALUES ($1, $2, $3, 'Default tenant administration role')"#,
+    )
+    .bind(role_id)
+    .bind(plan.role_name)
+    .bind(plan.tenant_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(db_err)?;
+
+    sqlx::query(
+        r#"INSERT INTO role_capabilities (role_id, capability_id)
+           SELECT $1, c.id
+           FROM capabilities c
+           WHERE c.name = ANY($2::text[])
+           ON CONFLICT DO NOTHING"#,
+    )
+    .bind(role_id)
+    .bind(plan.capabilities.as_slice())
+    .execute(&mut **tx)
+    .await
+    .map_err(db_err)?;
+
+    let linked_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM role_capabilities WHERE role_id = $1")
+            .bind(role_id)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(db_err)?;
+    if linked_count != plan.capabilities.len() as i64 {
+        return Err(AppError::Internal(anyhow::anyhow!(
+            "tenant-admin bootstrap missing seeded capabilities"
+        )));
+    }
+
+    sqlx::query(
+        r#"INSERT INTO policy_bindings
+             (tenant_id, subject_kind, subject_id, grant_kind, grant_id, scope_kind, scope_ref, effect, conditions)
+           VALUES ($1, 'entity', $2, 'role', $3, 'tenant', $4, 'allow', '{}')"#,
+    )
+    .bind(plan.tenant_id)
+    .bind(plan.creator_id)
+    .bind(role_id)
+    .bind(plan.scope_ref)
+    .execute(&mut **tx)
+    .await
+    .map_err(db_err)?;
+
+    let creator = sqlx::query("SELECT kind FROM entities WHERE id = $1")
+        .bind(plan.creator_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(db_err)?;
+
+    if creator
+        .and_then(|row| row.try_get::<String, _>("kind").ok())
+        .as_deref()
+        == Some("human")
+    {
+        sqlx::query(
+            r#"INSERT INTO tenant_memberships (tenant_id, entity_id, status)
+               VALUES ($1, $2, 'active')
+               ON CONFLICT (tenant_id, entity_id) DO NOTHING"#,
+        )
+        .bind(plan.tenant_id)
+        .bind(plan.creator_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(db_err)?;
+    }
+
+    Ok(())
 }
 
 pub async fn get_tenant(pool: &PgPool, id: Uuid) -> Result<Tenant, AppError> {
@@ -179,6 +300,29 @@ mod tests {
 
     fn unique_name(prefix: &str) -> String {
         format!("{prefix}-{}", Uuid::new_v4())
+    }
+
+    #[test]
+    fn tenant_admin_bootstrap_plan_matches_m5_contract() {
+        let tenant_id = Uuid::new_v4();
+        let creator_id = Uuid::new_v4();
+        let plan = tenant_admin_bootstrap(tenant_id, creator_id);
+
+        assert_eq!(plan.tenant_id, tenant_id);
+        assert_eq!(plan.creator_id, creator_id);
+        assert_eq!(plan.role_name, "tenant-admin");
+        assert_eq!(plan.scope_ref, tenant_id.to_string());
+        assert_eq!(
+            plan.capabilities,
+            [
+                "manage",
+                "audit.read",
+                "credential.manage",
+                "policy.manage",
+                "role.manage"
+            ]
+        );
+        assert!(!plan.capabilities.contains(&"tenant.manage"));
     }
 
     #[tokio::test]
