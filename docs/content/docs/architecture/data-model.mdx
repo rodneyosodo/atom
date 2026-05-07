@@ -12,15 +12,29 @@ Every principal in the system.
 | Column | Type | Notes |
 |---|---|---|
 | `id` | uuid PK | |
-| `kind` | text | `human \| device \| service \| workload \| application` |
+| `kind` | text | Internal Atom runtime/authz kind: `human \| device \| service \| workload \| application` |
 | `name` | text | Unique per tenant |
 | `tenant_id` | uuid nullable | Scopes the entity to a tenant |
+| `profile_id` | uuid nullable FK → profiles | User/domain subtype and schema layer |
+| `profile_version_id` | uuid nullable FK → profile_versions | Schema version used for attribute validation |
 | `status` | text | `active \| inactive \| suspended` |
 | `attributes` | jsonb | Arbitrary key-value metadata, usable in ABAC conditions |
 | `created_at` | timestamptz | |
 | `updated_at` | timestamptz | |
 
-Indexes: `kind`, `tenant_id`, `name`, `(name, tenant_id)` unique, GIN on `attributes`.
+`kind` remains the value used by authorization. `profile` and `profile_version` do not affect PDP semantics; they only classify and validate attributes at identity write time.
+
+Indexes: `kind`, `tenant_id`, `name`, `profile_id`, `profile_version_id`, `(name, tenant_id)` unique, GIN on `attributes`.
+
+## profiles / profile_versions
+
+Profiles define user-customizable subtypes for supported object kinds. Entity profiles are constrained to existing Atom entity kinds but may use arbitrary profile keys such as `client`, `gateway`, or `water_meter`.
+
+**profiles**: `id`, `tenant_id`, `object_kind`, `kind`, `key`, `display_name`, `description`, `status`, `created_at`, `updated_at`.
+
+**profile_versions**: `id`, `profile_id`, `version`, `json_schema`, `ui_schema`, `status`, `created_at`.
+
+For entities, `profile_versions.json_schema` validates `entities.attributes` on create and on attribute updates. Empty `{}` allows any attributes.
 
 ## credentials
 

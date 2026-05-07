@@ -1,6 +1,6 @@
 use axum::{
     routing::{delete, get, post},
-    Router,
+    Extension, Router,
 };
 use tower_http::{
     cors::{Any, CorsLayer},
@@ -8,21 +8,24 @@ use tower_http::{
 };
 
 use crate::{
-    authz::handlers as authz, identity::handlers as identity, keys, state::AppState,
+    authz::handlers as authz, graphql, identity::handlers as identity, keys, state::AppState,
     tenants::handlers as tenants,
 };
 
 pub fn create_router(state: AppState) -> Router {
+    let graphql_schema = graphql::build_schema(state.clone());
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
 
-    Router::new()
+    let app = Router::new()
         // JWKS — unauthenticated, consumed by external verifiers
         .route("/.well-known/jwks.json", get(keys::jwks))
         // Health
         .route("/health", get(identity::health))
+        // GraphQL
+        .route("/graphql", post(graphql::graphql_handler))
         // Auth
         .route("/auth/login", post(identity::login))
         .route("/auth/logout", post(identity::logout))
@@ -44,6 +47,16 @@ pub fn create_router(state: AppState) -> Router {
             get(identity::get_entity)
                 .put(identity::update_entity)
                 .delete(identity::delete_entity),
+        )
+        // Profiles
+        .route(
+            "/profiles",
+            get(identity::list_profiles).post(identity::create_profile),
+        )
+        .route("/profiles/:id", get(identity::get_profile))
+        .route(
+            "/profiles/:id/versions",
+            get(identity::list_profile_versions).post(identity::create_profile_version),
         )
         // Credentials
         .route(
@@ -162,8 +175,13 @@ pub fn create_router(state: AppState) -> Router {
         .route(
             "/admin/expiring-credentials",
             get(authz::expiring_credentials),
-        )
-        .with_state(state)
+        );
+
+    #[cfg(debug_assertions)]
+    let app = app.route("/graphql/playground", get(graphql::graphql_playground));
+
+    app.with_state(state)
+        .layer(Extension(graphql_schema))
         .layer(TraceLayer::new_for_http())
         .layer(cors)
 }

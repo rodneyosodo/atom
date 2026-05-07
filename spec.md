@@ -42,6 +42,13 @@ Atom
 Any principal: `human | device | service | workload | application`.  
 Has a `kind`, a `name` (unique per tenant), arbitrary `attributes` (JSONB), and a `status`.
 
+`kind` is Atom's internal runtime and authorization classification. It is the value used by the PDP for subject kind, object type, guardrails, and scope matching.
+
+### Profile
+User/domain-customizable subtype and schema layer for entities and future object types. For entities, a profile keeps `entities.kind` internal while allowing domain keys such as `client`, `gateway`, or `water_meter`.
+
+`profile_version` points at the JSON Schema used to validate `entities.attributes` on create and attribute update. It is for schema validation/history only and is not used by authorization.
+
 ### Credential
 Attached to an entity. Kinds: `password | api_key | certificate`.  
 - Password: argon2-hashed, looked up by entity name.  
@@ -126,7 +133,21 @@ The evaluation context is:
 
 ### `entities`
 ```sql
-id, kind, name, tenant_id, status, attributes (JSONB), created_at, updated_at
+id, kind, name, tenant_id, profile_id→profiles,
+profile_version_id→profile_versions, status, attributes (JSONB),
+created_at, updated_at
+```
+
+### `profiles`
+```sql
+id, tenant_id, object_kind, kind, key, display_name, description,
+status, created_at, updated_at
+```
+
+### `profile_versions`
+```sql
+id, profile_id→profiles, version, json_schema (JSONB),
+ui_schema (JSONB), status, created_at
 ```
 
 ### `credentials`
@@ -201,10 +222,19 @@ GET  /auth/sessions/:id
 ### Entities
 ```
 POST   /entities
-GET    /entities?kind=&tenant_id=&status=&limit=&offset=
+GET    /entities?kind=&profile_id=&tenant_id=&status=&limit=&offset=
 GET    /entities/:id
 PUT    /entities/:id
 DELETE /entities/:id
+```
+
+### Profiles
+```
+POST   /profiles
+GET    /profiles?object_kind=&kind=&key=&tenant_id=&status=&limit=&offset=
+GET    /profiles/:id
+POST   /profiles/:id/versions
+GET    /profiles/:id/versions
 ```
 
 ### Credentials

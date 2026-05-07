@@ -14,13 +14,14 @@ use crate::{
         entity::{CreateEntity, CreateOwnership, ListEntities, UpdateEntity},
         enums::AuditOutcome,
         group::{AddMember, CreateGroup, ListGroups},
+        profile::{CreateProfile, CreateProfileVersion, ListProfiles},
         session::LoginRequest,
         token::CreateApiKey,
     },
     state::AppState,
 };
 
-use super::{repo, service};
+use super::{profile_repo, repo, service};
 
 fn scope_for_tenant(tenant_id: Option<Uuid>) -> Scope {
     match tenant_id {
@@ -190,6 +191,70 @@ pub async fn delete_entity(
     }
     repo::delete_entity(&state.pool, id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ─── Profiles ────────────────────────────────────────────────────────────────
+
+pub async fn create_profile(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Json(req): Json<CreateProfile>,
+) -> Result<impl IntoResponse, AppError> {
+    require_capability(
+        &state.pool,
+        auth.entity_id,
+        "manage",
+        scope_for_tenant(req.tenant_id),
+    )
+    .await?;
+    let profile = profile_repo::create_profile(&state.pool, req).await?;
+    Ok((StatusCode::CREATED, Json(profile)))
+}
+
+pub async fn list_profiles(
+    State(state): State<AppState>,
+    _auth: AuthContext,
+    Query(params): Query<ListProfiles>,
+) -> Result<impl IntoResponse, AppError> {
+    let list = profile_repo::list_profiles(&state.pool, params).await?;
+    Ok(Json(list))
+}
+
+pub async fn get_profile(
+    State(state): State<AppState>,
+    _auth: AuthContext,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let profile = profile_repo::get_profile(&state.pool, id).await?;
+    Ok(Json(profile))
+}
+
+pub async fn create_profile_version(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Path(profile_id): Path<Uuid>,
+    Json(req): Json<CreateProfileVersion>,
+) -> Result<impl IntoResponse, AppError> {
+    let profile = profile_repo::get_profile(&state.pool, profile_id).await?;
+    require_capability(
+        &state.pool,
+        auth.entity_id,
+        "manage",
+        scope_for_tenant(profile.tenant_id),
+    )
+    .await?;
+    let version = profile_repo::create_profile_version(&state.pool, profile_id, req).await?;
+    Ok((StatusCode::CREATED, Json(version)))
+}
+
+pub async fn list_profile_versions(
+    State(state): State<AppState>,
+    _auth: AuthContext,
+    Path(profile_id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    profile_repo::get_profile(&state.pool, profile_id).await?;
+    let versions = profile_repo::list_profile_versions(&state.pool, profile_id).await?;
+    Ok(Json(serde_json::json!({"items": versions})))
 }
 
 // ─── Credentials ──────────────────────────────────────────────────────────────

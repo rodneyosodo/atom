@@ -4,6 +4,7 @@ pub mod entity;
 pub mod enums;
 pub mod group;
 pub mod policy;
+pub mod profile;
 pub mod resource;
 pub mod role;
 pub mod session;

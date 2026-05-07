@@ -11,6 +11,8 @@ pub struct Entity {
     pub kind: EntityKind,
     pub name: String,
     pub tenant_id: Option<Uuid>,
+    pub profile_id: Option<Uuid>,
+    pub profile_version_id: Option<Uuid>,
     pub status: EntityStatus,
     pub attributes: Value,
     pub created_at: DateTime<Utc>,
@@ -19,7 +21,9 @@ pub struct Entity {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateEntity {
-    pub kind: EntityKind,
+    pub kind: Option<EntityKind>,
+    pub profile_id: Option<Uuid>,
+    pub profile_version_id: Option<Uuid>,
     pub name: String,
     pub tenant_id: Option<Uuid>,
     #[serde(default)]
@@ -36,6 +40,7 @@ pub struct UpdateEntity {
 #[derive(Debug, Deserialize)]
 pub struct ListEntities {
     pub kind: Option<EntityKind>,
+    pub profile_id: Option<Uuid>,
     pub tenant_id: Option<Uuid>,
     pub status: Option<EntityStatus>,
     #[serde(default = "default_limit")]

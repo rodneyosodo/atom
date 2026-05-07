@@ -38,6 +38,54 @@ docker-compose up
 
 The service starts on `http://localhost:8080`.
 
+GraphQL is available at `POST /graphql`; a playground is available at `/graphql/playground` in debug builds. GraphQL uses the same Bearer token authentication as REST.
+
+The initial GraphQL schema covers health, profiles, profile versions, entities, and profile-driven entity creation. REST remains the primary API for full administration.
+
+Profiles keep Atom's internal runtime/authz kind separate from user/domain subtypes:
+
+- `kind` is the internal Atom entity kind used by authorization (`human`, `device`, `service`, `workload`, `application`).
+- `profile` is the user-customizable subtype/schema selector, such as `client`, `gateway`, or `water_meter`.
+- `profileVersion` identifies the JSON Schema used to validate entity attributes. It is not used by authorization.
+
+```graphql
+query {
+  profiles(objectKind: "entity", kind: "device") {
+    items {
+      id
+      key
+      displayName
+    }
+  }
+}
+
+query {
+  profileVersions(profileId: "...") {
+    id
+    version
+    jsonSchema
+    uiSchema
+    status
+  }
+}
+
+mutation {
+  createEntity(input: {
+    profileId: "...",
+    name: "meter-001",
+    attributes: {
+      serial_no: "WM-001"
+    }
+  }) {
+    id
+    kind
+    profileId
+    profileVersionId
+    attributes
+  }
+}
+```
+
 ---
 
 ## Configuration

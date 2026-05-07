@@ -54,6 +54,16 @@ components:
       enum: [active, inactive, suspended]
       default: active
 
+    ProfileStatus:
+      type: string
+      enum: [active, deprecated, disabled]
+      default: active
+
+    ProfileVersionStatus:
+      type: string
+      enum: [draft, active, deprecated, disabled]
+      default: active
+
     CredentialKind:
       type: string
       enum: [password, api_key, certificate]
@@ -199,6 +209,16 @@ components:
           type: string
           format: uuid
           nullable: true
+        profile_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: User/domain profile. Authorization still uses `kind`.
+        profile_version_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Profile version used to validate `attributes`.
         status:
           $ref: '#/components/schemas/EntityStatus'
         attributes:
@@ -214,10 +234,21 @@ components:
 
     CreateEntity:
       type: object
-      required: [kind, name]
+      required: [name]
+      description: >
+        Provide either `kind` for legacy/internal creation, or `profile_id` to derive
+        the internal Atom kind from an active entity profile. `profile_version_id`
+        is optional when `profile_id` is present; Atom uses the active version
+        when omitted.
       properties:
         kind:
           $ref: '#/components/schemas/EntityKind'
+        profile_id:
+          type: string
+          format: uuid
+        profile_version_id:
+          type: string
+          format: uuid
         name:
           type: string
           example: sensor-01
@@ -249,6 +280,128 @@ components:
         total:
           type: integer
           description: Total count across all pages
+
+    # ── Profiles ───────────────────────────────────────────────────────────
+
+    Profile:
+      type: object
+      required: [id, object_kind, kind, key, display_name, status, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+          nullable: true
+        object_kind:
+          type: string
+          enum: [entity, resource, group, tenant, credential]
+        kind:
+          type: string
+          description: Internal object kind value. Entity profiles must use an EntityKind.
+          example: device
+        key:
+          type: string
+          description: User/domain subtype key.
+          example: client
+        display_name:
+          type: string
+          example: Client
+        description:
+          type: string
+          nullable: true
+        status:
+          $ref: '#/components/schemas/ProfileStatus'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateProfile:
+      type: object
+      required: [object_kind, kind, key, display_name]
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        object_kind:
+          type: string
+          enum: [entity, resource, group, tenant, credential]
+        kind:
+          type: string
+          example: device
+        key:
+          type: string
+          example: client
+        display_name:
+          type: string
+          example: Client
+        description:
+          type: string
+        status:
+          $ref: '#/components/schemas/ProfileStatus'
+
+    ProfileVersion:
+      type: object
+      required: [id, profile_id, version, json_schema, ui_schema, status, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        profile_id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+        json_schema:
+          type: object
+          default: {}
+        ui_schema:
+          type: object
+          default: {}
+        status:
+          $ref: '#/components/schemas/ProfileVersionStatus'
+        created_at:
+          type: string
+          format: date-time
+
+    CreateProfileVersion:
+      type: object
+      required: [version]
+      properties:
+        version:
+          type: integer
+        json_schema:
+          type: object
+          default: {}
+        ui_schema:
+          type: object
+          default: {}
+        status:
+          $ref: '#/components/schemas/ProfileVersionStatus'
+
+    ProfileList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Profile'
+        total:
+          type: integer
+
+    ProfileVersionList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProfileVersion'
 
     # ── Credentials ────────────────────────────────────────────────────────
 
@@ -992,6 +1145,11 @@ paths:
           in: query
           schema:
             $ref: '#/components/schemas/EntityKind'
+        - name: profile_id
+          in: query
+          schema:
+            type: string
+            format: uuid
         - name: tenant_id
           in: query
           schema:
@@ -1035,6 +1193,7 @@ paths:
               $ref: '#/components/schemas/CreateEntity'
             example:
               kind: device
+              profile_id: null
               name: sensor-01
               attributes:
                 firmware: "2.1.0"
@@ -1127,6 +1286,174 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "404":
           $ref: '#/components/responses/NotFound'
+
+  # ── Profiles ───────────────────────────────────────────────────────────
+
+  /profiles:
+    get:
+      operationId: listProfiles
+      summary: List profiles
+      tags: [Profiles]
+      parameters:
+        - name: object_kind
+          in: query
+          schema:
+            type: string
+            enum: [entity, resource, group, tenant, credential]
+        - name: kind
+          in: query
+          schema:
+            type: string
+        - name: key
+          in: query
+          schema:
+            type: string
+        - name: tenant_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/ProfileStatus'
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: Paginated profile list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileList'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      operationId: createProfile
+      summary: Create a profile
+      description: "**RequireManage.** Entity profiles derive `entities.kind`; authorization still uses that internal kind."
+      tags: [Profiles]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProfile'
+            example:
+              object_kind: entity
+              kind: device
+              key: client
+              display_name: Client
+      responses:
+        "201":
+          description: Profile created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Profile'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/Conflict'
+
+  /profiles/{id}:
+    get:
+      operationId: getProfile
+      summary: Get a profile
+      tags: [Profiles]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Profile'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+  /profiles/{id}/versions:
+    get:
+      operationId: listProfileVersions
+      summary: List profile versions
+      tags: [Profiles]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Profile versions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileVersionList'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+    post:
+      operationId: createProfileVersion
+      summary: Create a profile version
+      description: "**RequireManage.** Creating a version does not mutate older versions."
+      tags: [Profiles]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProfileVersion'
+            example:
+              version: 1
+              json_schema: {}
+              ui_schema: {}
+      responses:
+        "201":
+          description: Profile version created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileVersion'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "409":
+          $ref: '#/components/responses/Conflict'
 
   # ── Credentials ────────────────────────────────────────────────────────
 

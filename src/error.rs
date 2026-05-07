@@ -68,6 +68,14 @@ impl IntoResponse for AppError {
                             )
                                 .into_response();
                         }
+                        // Check violation
+                        Some("23514") => {
+                            return (
+                                StatusCode::BAD_REQUEST,
+                                Json(json!({"error": db.message()})),
+                            )
+                                .into_response();
+                        }
                         _ => {}
                     }
                 }

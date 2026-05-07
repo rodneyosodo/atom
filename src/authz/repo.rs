@@ -464,7 +464,10 @@ pub async fn entity_access(
     params: AccessQuery,
 ) -> Result<EntityAccessResponse, AppError> {
     let entity = sqlx::query_as::<_, Entity>(
-        "SELECT id, kind, name, tenant_id, status, attributes, created_at, updated_at FROM entities WHERE id = $1",
+        r#"SELECT id, kind, name, tenant_id, profile_id, profile_version_id,
+                  status, attributes, created_at, updated_at
+           FROM entities
+           WHERE id = $1"#,
     )
     .bind(entity_id)
     .fetch_one(pool)
@@ -1015,7 +1018,10 @@ pub async fn effective_capabilities(
 ) -> Result<EffectiveCapabilitiesResponse, AppError> {
     use sqlx::Row;
     let entity = sqlx::query_as::<_, Entity>(
-        "SELECT id, kind, name, tenant_id, status, attributes, created_at, updated_at FROM entities WHERE id = $1",
+        r#"SELECT id, kind, name, tenant_id, profile_id, profile_version_id,
+                  status, attributes, created_at, updated_at
+           FROM entities
+           WHERE id = $1"#,
     )
     .bind(entity_id)
     .fetch_one(pool)

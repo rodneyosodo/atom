@@ -18,6 +18,50 @@ Built for [Magistrala](https://github.com/absmach/magistrala), but generic enoug
 | **Ownership** | Parent–child relationships between entities. |
 | **Multi-tenancy** | All resources are tenant-scoped. |
 
+## GraphQL
+
+Atom exposes GraphQL at `POST /graphql`; debug builds also expose `/graphql/playground`. GraphQL uses the same Bearer token authentication as REST. The current schema covers health, profiles, profile versions, entities, and profile-driven entity creation. REST remains the primary API for full administration.
+
+For entity creation, frontends should send `profileId` when a profile is selected. Atom derives the internal `kind` from `profile.kind`; if `profileVersionId` is omitted, Atom uses the active/latest profile version. Authorization still uses `entities.kind`, not `profileId` or `profileVersionId`.
+
+```graphql
+query {
+  profiles(objectKind: "entity", kind: "device") {
+    items {
+      id
+      key
+      displayName
+    }
+  }
+}
+
+query {
+  profileVersions(profileId: "...") {
+    id
+    version
+    jsonSchema
+    uiSchema
+    status
+  }
+}
+
+mutation {
+  createEntity(input: {
+    profileId: "...",
+    name: "meter-001",
+    attributes: {
+      serial_no: "WM-001"
+    }
+  }) {
+    id
+    kind
+    profileId
+    profileVersionId
+    attributes
+  }
+}
+```
+
 ## Core design principles
 
 **Entity-first** — everything is an entity. There is no special "user" class. Humans, devices, and services are all modeled identically and treated symmetrically by the authorization engine.
