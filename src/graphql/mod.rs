@@ -64,31 +64,23 @@ fn playground_html() -> String {
         "endpoint": "/graphql",
         "settings": {
             "editor.reuseHeaders": true,
-            "request.credentials": "same-origin",
-            "request.globalHeaders": {
-                "Authorization": "Bearer paste-jwt-or-api-key-here"
-            }
+            "request.credentials": "same-origin"
         },
         "tabs": [
             {
-                "name": "Login Helper",
+                "name": "Login",
                 "endpoint": "/graphql",
-                "headers": {
-                    "Authorization": "Bearer paste-jwt-or-api-key-here"
-                },
                 "query": concat!(
-                    "# Atom login is a REST call, not a GraphQL mutation.\n",
-                    "# Run this in another terminal, then paste the token into HTTP HEADERS.\n",
-                    "#\n",
-                    "# curl -s http://localhost:8081/auth/login \\\n",
-                    "#   -H 'Content-Type: application/json' \\\n",
-                    "#   -d '{\"identifier\":\"atom-admin\",\"secret\":\"change-me\",\"kind\":\"password\"}'\n",
-                    "\n",
-                    "query Health {\n",
-                    "  health\n",
+                    "mutation Login($input: LoginInput!) {\n",
+                    "  login(input: $input) {\n",
+                    "    token\n",
+                    "    entityId\n",
+                    "    sessionId\n",
+                    "    expiresAt\n",
+                    "  }\n",
                     "}\n"
                 ),
-                "variables": "{}"
+                "variables": "{\n  \"input\": {\n    \"identifier\": \"atom-admin\",\n    \"secret\": \"change-me\",\n    \"kind\": \"password\"\n  }\n}"
             },
             {
                 "name": "Profiles",
@@ -110,6 +102,49 @@ fn playground_html() -> String {
                     "}\n"
                 ),
                 "variables": "{\n  \"objectKind\": \"entity\",\n  \"kind\": \"device\",\n  \"limit\": 20,\n  \"offset\": 0\n}"
+            },
+            {
+                "name": "Create Tenant",
+                "endpoint": "/graphql",
+                "headers": {
+                    "Authorization": "Bearer paste-jwt-or-api-key-here"
+                },
+                "query": concat!(
+                    "mutation CreateTenant($input: CreateTenantInput!) {\n",
+                    "  createTenant(input: $input) {\n",
+                    "    id\n",
+                    "    name\n",
+                    "    route\n",
+                    "    status\n",
+                    "  }\n",
+                    "}\n"
+                ),
+                "variables": "{\n  \"input\": {\n    \"name\": \"factory-a\",\n    \"route\": \"factory-a\"\n  }\n}"
+            },
+            {
+                "name": "View Tenants",
+                "endpoint": "/graphql",
+                "headers": {
+                    "Authorization": "Bearer paste-jwt-or-api-key-here"
+                },
+                "query": concat!(
+                    "query ViewTenants($limit: Int = 20, $offset: Int = 0) {\n",
+                    "  tenants(limit: $limit, offset: $offset) {\n",
+                    "    items {\n",
+                    "      id\n",
+                    "      name\n",
+                    "      route\n",
+                    "      status\n",
+                    "      tags\n",
+                    "      attributes\n",
+                    "      createdAt\n",
+                    "      updatedAt\n",
+                    "    }\n",
+                    "    total\n",
+                    "  }\n",
+                    "}\n"
+                ),
+                "variables": "{\n  \"limit\": 20,\n  \"offset\": 0\n}"
             },
             {
                 "name": "Create Entity",
@@ -140,6 +175,87 @@ fn playground_html() -> String {
                     "  }\n",
                     "}"
                 )
+            },
+            {
+                "name": "View Entities",
+                "endpoint": "/graphql",
+                "headers": {
+                    "Authorization": "Bearer paste-jwt-or-api-key-here"
+                },
+                "query": concat!(
+                    "query ViewEntities($kind: String, $limit: Int = 20, $offset: Int = 0) {\n",
+                    "  entities(kind: $kind, limit: $limit, offset: $offset) {\n",
+                    "    items {\n",
+                    "      id\n",
+                    "      kind\n",
+                    "      profileId\n",
+                    "      profileVersionId\n",
+                    "      name\n",
+                    "      tenantId\n",
+                    "      status\n",
+                    "      attributes\n",
+                    "      createdAt\n",
+                    "      updatedAt\n",
+                    "    }\n",
+                    "    total\n",
+                    "  }\n",
+                    "}\n"
+                ),
+                "variables": "{\n  \"kind\": \"device\",\n  \"limit\": 20,\n  \"offset\": 0\n}"
+            },
+            {
+                "name": "Create Resource",
+                "endpoint": "/graphql",
+                "headers": {
+                    "Authorization": "Bearer paste-jwt-or-api-key-here"
+                },
+                "query": concat!(
+                    "mutation CreateResource($input: CreateResourceInput!) {\n",
+                    "  createResource(input: $input) {\n",
+                    "    id\n",
+                    "    kind\n",
+                    "    name\n",
+                    "    tenantId\n",
+                    "    attributes\n",
+                    "  }\n",
+                    "}\n"
+                ),
+                "variables": concat!(
+                    "{\n",
+                    "  \"input\": {\n",
+                    "    \"kind\": \"channel\",\n",
+                    "    \"name\": \"telemetry\",\n",
+                    "    \"attributes\": {\n",
+                    "      \"topic\": \"telemetry\"\n",
+                    "    }\n",
+                    "  }\n",
+                    "}"
+                )
+            },
+            {
+                "name": "View Resources",
+                "endpoint": "/graphql",
+                "headers": {
+                    "Authorization": "Bearer paste-jwt-or-api-key-here"
+                },
+                "query": concat!(
+                    "query ViewResources($kind: String, $limit: Int = 20, $offset: Int = 0) {\n",
+                    "  resources(kind: $kind, limit: $limit, offset: $offset) {\n",
+                    "    items {\n",
+                    "      id\n",
+                    "      kind\n",
+                    "      name\n",
+                    "      tenantId\n",
+                    "      ownerId\n",
+                    "      attributes\n",
+                    "      createdAt\n",
+                    "      updatedAt\n",
+                    "    }\n",
+                    "    total\n",
+                    "  }\n",
+                    "}\n"
+                ),
+                "variables": "{\n  \"kind\": \"channel\",\n  \"limit\": 20,\n  \"offset\": 0\n}"
             }
         ]
     });
@@ -178,10 +294,15 @@ mod tests {
     #[test]
     fn playground_contains_seed_tabs() {
         let html = playground_html();
-        assert!(html.contains("Login Helper"));
+        assert!(html.contains("Login"));
         assert!(html.contains("Profiles"));
+        assert!(html.contains("Create Tenant"));
+        assert!(html.contains("View Tenants"));
         assert!(html.contains("Create Entity"));
+        assert!(html.contains("View Entities"));
+        assert!(html.contains("Create Resource"));
+        assert!(html.contains("View Resources"));
         assert!(html.contains("paste-jwt-or-api-key-here"));
-        assert!(html.contains("request.globalHeaders"));
+        assert!(!html.contains("request.globalHeaders"));
     }
 }

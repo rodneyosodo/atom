@@ -49,13 +49,18 @@ GraphQL is available at `POST /graphql` in both images. GraphQL uses the same Be
 
 The dev playground is preloaded with helper tabs for:
 
-- logging in via the REST `/auth/login` endpoint
+- logging in
 - listing profiles
+- creating a tenant
+- viewing tenants
 - creating an entity from a profile
+- viewing entities
+- creating a resource
+- viewing resources
 
-It also seeds the HTTP headers editor with an `Authorization: Bearer ...` placeholder so you can paste a JWT or API key once and reuse it across tabs.
+Authenticated playground tabs include an `Authorization: Bearer ...` placeholder. The Login tab intentionally has no Authorization header because login is unauthenticated.
 
-The initial GraphQL schema covers health, profiles, profile versions, entities, and profile-driven entity creation. REST remains the primary API for full administration.
+The GraphQL schema covers health, login/logout/session lookup, tenants, profiles, profile versions, entities, resources, groups, credentials, ownerships, roles, capabilities, policies, authz checks, audit logs, and profile-driven entity creation. REST remains available and unchanged.
 
 Profiles keep Atom's internal runtime/authz kind separate from user/domain subtypes:
 
@@ -64,29 +69,34 @@ Profiles keep Atom's internal runtime/authz kind separate from user/domain subty
 - `profileVersion` identifies the JSON Schema used to validate entity attributes. It is not used by authorization.
 
 ```graphql
-query {
-  profiles(objectKind: "entity", kind: "device") {
-    items {
-      id
-      key
-      displayName
-    }
+mutation {
+  login(input: {
+    identifier: "atom-admin",
+    secret: "change-me",
+    kind: "password"
+  }) {
+    token
+    entityId
+    sessionId
+    expiresAt
   }
 }
 
-query {
-  profileVersions(profileId: "...") {
+mutation {
+  createTenant(input: {
+    name: "factory-a",
+    route: "factory-a"
+  }) {
     id
-    version
-    jsonSchema
-    uiSchema
+    name
+    route
     status
   }
 }
 
 mutation {
   createEntity(input: {
-    profileId: "...",
+    profileId: "client-profile-id",
     name: "meter-001",
     attributes: {
       serial_no: "WM-001"
@@ -99,7 +109,54 @@ mutation {
     attributes
   }
 }
+
+mutation {
+  createResource(input: {
+    kind: "channel",
+    name: "telemetry",
+    attributes: {
+      topic: "telemetry"
+    }
+  }) {
+    id
+    kind
+    name
+    attributes
+  }
+}
+
+mutation {
+  createPolicy(input: {
+    subjectKind: "entity",
+    subjectId: "client-entity-id",
+    grantKind: "capability",
+    grantId: "publish-capability-id",
+    scopeKind: "object",
+    scopeRef: "channel-resource-id",
+    effect: "allow"
+  }) {
+    id
+    effect
+  }
+}
+
+mutation {
+  authzCheck(input: {
+    subjectId: "client-entity-id",
+    action: "publish",
+    resourceId: "channel-resource-id"
+  }) {
+    allowed
+    reason
+  }
+}
 ```
+
+Magistrala mapping uses generic Atom operations:
+
+- a Magistrala domain calls `createTenant`
+- a Magistrala client calls `createEntity` with `kind=device` via the `client` profile
+- a Magistrala channel calls `createResource` with `kind="channel"`
 
 ---
 
