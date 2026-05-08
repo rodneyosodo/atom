@@ -47,13 +47,13 @@ The dev Docker image serves Atom on `http://localhost:8081`; because it is built
 
 GraphQL is available at `POST /graphql` in both images. GraphQL uses the same Bearer token authentication as REST.
 
-`/graphql/playground` is the simple debug playground. `/graphql/console` is the Atom GraphQL Console: a local developer console for login, GraphQL introspection, operation generation, generic builders, and request execution. Enable it explicitly with:
+`/graphql/playground` is the simple debug playground. `/graphql/console` is the generic Atom API Builder: a task-first console for guided tenant setup, profile-driven entity creation, protected resource creation, policy grants, credential management, authorization checks, and reusable GraphQL recipes. Enable it explicitly with:
 
 ```bash
 ATOM_GRAPHQL_CONSOLE_ENABLED=true
 ```
 
-The console is disabled by default and uses GraphQL introspection only; it does not inspect raw database tables. It is generic Atom only and does not provide Magistrala-specific mutations.
+The console is disabled by default. Its default mode is task-first and plain-language; its advanced mode is a GraphQL explorer backed by introspection. It uses GraphQL introspection and Atom GraphQL operations only, does not inspect raw database tables, and does not provide Magistrala-specific mutations or aliases.
 
 The dev playground is preloaded with helper tabs for:
 
@@ -70,7 +70,7 @@ Authenticated playground tabs include an `Authorization: Bearer ...` placeholder
 
 The GraphQL schema covers health, login/logout/session lookup, tenants, profiles, profile versions, entities, resources, groups, credentials, ownerships, roles, capabilities, policies, authz checks, audit logs, and profile-driven entity creation. REST remains available and unchanged.
 
-Atom GraphQL is generic. No Magistrala-specific GraphQL aliases exist; use the domain, client, and channel mappings below.
+Atom GraphQL is generic. No Magistrala-specific GraphQL aliases exist; use the generic application mappings below.
 
 GraphQL uses typed enums for Atom's fixed vocabularies, including `EntityKind`, `EntityStatus`, `TenantStatus`, `SubjectKind`, `GrantKind`, `ScopeKind`, `Effect`, `CredentialKind`, and `AuditOutcome`. Inline GraphQL uses enum values without quotes, such as `kind: device` or `scopeKind: object`. When using variables, send the same value as a JSON string, such as `"device"`.
 
@@ -164,12 +164,12 @@ mutation {
 }
 ```
 
-Magistrala mapping uses generic Atom operations:
+Generic application mapping:
 
-- a Magistrala domain calls `createTenant`
-- a Magistrala client calls `createEntity` with `kind=device` via the `client` profile
-- a Magistrala channel calls `createResource` with `kind="channel"`
-- publish/subscribe permissions use `createPolicy` over entity subjects and resource objects
+- a domain-like app calls `createTenant`
+- a client-like app calls `createEntity` with a device/client profile
+- a channel-like app calls `createResource` with `kind="channel"`
+- a connection-like app calls `createPolicy` over entity subjects and resource objects
 
 ---
 
@@ -183,7 +183,7 @@ Magistrala mapping uses generic Atom operations:
 | `JWT_EXPIRY_SECS`| `3600`                                     | JWT lifetime in seconds         |
 | `ADMIN_SECRET`   | *(optional)*                               | Seeds admin password on first boot |
 | `ADMIN_ENTITY_ID`| `00000000-0000-0000-0000-000000000001`     | Override seeded admin UUID      |
-| `ATOM_GRAPHQL_CONSOLE_ENABLED` | `false`                     | Enables `/graphql/console` developer console |
+| `ATOM_GRAPHQL_CONSOLE_ENABLED` | `false`                     | Enables `/graphql/console` API Builder console |
 | `RUST_LOG`       | `info`                                     | Log level filter                |
 
 ---
