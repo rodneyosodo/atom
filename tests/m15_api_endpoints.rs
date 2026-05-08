@@ -1,0 +1,460 @@
+//! API endpoint metadata and execution tests.
+//!
+//! Run with:
+//! ```bash
+//! DATABASE_URL=postgres://... cargo test --test m15_api_endpoints -- --ignored
+//! ```
+
+mod common;
+
+use async_graphql::Request as GraphqlRequest;
+use atom::{
+    api_endpoints::repo as api_endpoint_repo,
+    api_templates::repo as api_template_repo,
+    auth::{encode_jwt, AuthContext},
+    config::{Config, ADMIN_ENTITY_ID},
+    graphql::build_schema,
+    identity::repo as identity_repo,
+    keys::{self, ActiveKeys},
+    models::api_endpoint::{CreateApiEndpoint, ListApiEndpoints, UpdateApiEndpoint},
+    models::api_template::{ApiTemplateOperationKind, CreateApiTemplate},
+    routes::create_router,
+    state::AppState,
+};
+use axum::{
+    body::{to_bytes, Body},
+    http::{Request, StatusCode},
+};
+use serde_json::{json, Value};
+use sqlx::PgPool;
+use tower::ServiceExt;
+use uuid::Uuid;
+
+fn state(pool: PgPool, keys: ActiveKeys) -> AppState {
+    let config = Config {
+        database_url: "postgres://atom:atom@localhost/atom_test".into(),
+        listen_addr: "127.0.0.1:0".into(),
+        grpc_addr: "127.0.0.1:0".into(),
+        jwt_expiry_secs: 3600,
+        admin_entity_id: ADMIN_ENTITY_ID,
+        admin_secret: None,
+        graphql_console_enabled: false,
+    };
+    AppState::new(pool, config, keys)
+}
+
+async fn active_keys(pool: &PgPool) -> ActiveKeys {
+    keys::rotate(pool).await.expect("rotate test signing key")
+}
+
+async fn admin_token(pool: &PgPool, keys: &ActiveKeys) -> String {
+    let session = identity_repo::create_session(pool, common::admin_id(), 3600)
+        .await
+        .expect("create admin session");
+    encode_jwt(common::admin_id(), session.id, None, &keys.primary, 3600).expect("encode jwt")
+}
+
+fn authed(query: impl Into<String>) -> GraphqlRequest {
+    GraphqlRequest::new(query).data(AuthContext {
+        entity_id: common::admin_id(),
+        tenant_id: None,
+        session_id: None,
+    })
+}
+
+async fn template(pool: &PgPool, key: &str, graphql: &str) -> Uuid {
+    api_template_repo::create_api_template(
+        pool,
+        CreateApiTemplate {
+            tenant_id: None,
+            key: key.into(),
+            name: key.into(),
+            description: None,
+            operation_kind: ApiTemplateOperationKind::Query,
+            graphql: graphql.into(),
+            variables_schema: json!({}),
+            default_variables: json!({}),
+            result_selector: json!({}),
+            tags: vec!["api-endpoint-test".into()],
+            status: None,
+        },
+        Some(common::admin_id()),
+    )
+    .await
+    .expect("create template")
+    .id
+}
+
+fn endpoint_req(key: &str, path: &str, template_id: Uuid) -> CreateApiEndpoint {
+    CreateApiEndpoint {
+        tenant_id: None,
+        key: key.into(),
+        name: key.into(),
+        description: Some("test endpoint".into()),
+        method: "POST".into(),
+        path: path.into(),
+        template_id,
+        auth_mode: Some("caller_context".into()),
+        service_entity_id: None,
+        variables_mapping: json!({}),
+        request_schema: json!({}),
+        response_mapping: json!({}),
+        status: Some("draft".into()),
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn repo_create_list_update_enable_and_disable_api_endpoint() {
+    let pool = common::pool().await;
+    let suffix = Uuid::new_v4();
+    let template_id = template(
+        &pool,
+        &format!("endpoint_repo_template_{suffix}"),
+        "{ health }",
+    )
+    .await;
+    let path = format!("/api/custom/repo-{suffix}");
+
+    let created = api_endpoint_repo::create_api_endpoint(
+        &pool,
+        endpoint_req(&format!("endpoint_repo_{suffix}"), &path, template_id),
+        Some(common::admin_id()),
+    )
+    .await
+    .expect("create endpoint");
+    assert_eq!(created.status, "draft");
+
+    let list = api_endpoint_repo::list_api_endpoints(
+        &pool,
+        ListApiEndpoints {
+            tenant_id: None,
+            status: Some("draft".into()),
+            limit: 50,
+            offset: 0,
+        },
+    )
+    .await
+    .expect("list endpoints");
+    assert!(list.items.iter().any(|endpoint| endpoint.id == created.id));
+
+    let updated = api_endpoint_repo::update_api_endpoint(
+        &pool,
+        created.id,
+        UpdateApiEndpoint {
+            key: None,
+            name: Some("Updated endpoint".into()),
+            description: None,
+            method: None,
+            path: None,
+            template_id: None,
+            auth_mode: None,
+            service_entity_id: None,
+            variables_mapping: Some(json!({"input.name": "$body.name"})),
+            request_schema: None,
+            response_mapping: Some(json!({"data": "$.health"})),
+            status: None,
+        },
+        Some(common::admin_id()),
+    )
+    .await
+    .expect("update endpoint");
+    assert_eq!(updated.name, "Updated endpoint");
+
+    let enabled =
+        api_endpoint_repo::enable_api_endpoint(&pool, created.id, Some(common::admin_id()))
+            .await
+            .expect("enable endpoint");
+    assert_eq!(enabled.status, "active");
+
+    let disabled =
+        api_endpoint_repo::disable_api_endpoint(&pool, created.id, Some(common::admin_id()))
+            .await
+            .expect("disable endpoint");
+    assert_eq!(disabled.status, "disabled");
+}
+
+#[tokio::test]
+#[ignore]
+async fn repo_rejects_invalid_path_duplicate_active_path_and_introspection_template() {
+    let pool = common::pool().await;
+    let suffix = Uuid::new_v4();
+    let template_id = template(
+        &pool,
+        &format!("endpoint_safety_template_{suffix}"),
+        "{ health }",
+    )
+    .await;
+
+    let invalid = api_endpoint_repo::create_api_endpoint(
+        &pool,
+        endpoint_req(&format!("bad_path_{suffix}"), "/devices", template_id),
+        Some(common::admin_id()),
+    )
+    .await;
+    assert!(invalid.is_err());
+
+    let path = format!("/api/custom/duplicate-{suffix}");
+    let mut first = endpoint_req(
+        &format!("endpoint_duplicate_a_{suffix}"),
+        &path,
+        template_id,
+    );
+    first.status = Some("active".into());
+    api_endpoint_repo::create_api_endpoint(&pool, first, Some(common::admin_id()))
+        .await
+        .expect("first active endpoint");
+    let mut second = endpoint_req(
+        &format!("endpoint_duplicate_b_{suffix}"),
+        &path,
+        template_id,
+    );
+    second.status = Some("active".into());
+    let duplicate =
+        api_endpoint_repo::create_api_endpoint(&pool, second, Some(common::admin_id())).await;
+    assert!(duplicate.is_err());
+
+    let introspection_template = template(
+        &pool,
+        &format!("endpoint_introspection_template_{suffix}"),
+        "query IntrospectionQuery { __schema { queryType { name } } }",
+    )
+    .await;
+    let introspection = api_endpoint_repo::create_api_endpoint(
+        &pool,
+        endpoint_req(
+            &format!("endpoint_introspection_{suffix}"),
+            &format!("/api/custom/introspection-{suffix}"),
+            introspection_template,
+        ),
+        Some(common::admin_id()),
+    )
+    .await;
+    assert!(introspection.is_err());
+}
+
+#[tokio::test]
+#[ignore]
+async fn graphql_management_api_creates_lists_updates_enables_and_disables_endpoint() {
+    let pool = common::pool().await;
+    let schema = build_schema(state(pool.clone(), active_keys(&pool).await));
+    let suffix = Uuid::new_v4();
+    let template_id = template(
+        &pool,
+        &format!("endpoint_graphql_template_{suffix}"),
+        "{ health }",
+    )
+    .await;
+    let key = format!("endpoint_graphql_{suffix}");
+    let path = format!("/api/custom/graphql-{suffix}");
+
+    let create = schema
+        .execute(authed(format!(
+            r#"
+            mutation {{
+              createApiEndpoint(input: {{
+                key: "{key}",
+                name: "GraphQL endpoint",
+                method: "POST",
+                path: "{path}",
+                templateId: "{template_id}",
+                status: "draft"
+              }}) {{
+                id
+                key
+                status
+              }}
+            }}
+            "#
+        )))
+        .await;
+    assert!(create.errors.is_empty(), "{:?}", create.errors);
+    let id = create.data.into_json().expect("json")["createApiEndpoint"]["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+
+    let list = schema
+        .execute(authed(
+            r#"
+            {
+              apiEndpoints(status: "draft", limit: 20) {
+                items { key status }
+                total
+              }
+            }
+            "#,
+        ))
+        .await;
+    assert!(list.errors.is_empty(), "{:?}", list.errors);
+
+    let enable = schema
+        .execute(authed(format!(
+            r#"mutation {{ enableApiEndpoint(id: "{id}") {{ status }} }}"#
+        )))
+        .await;
+    assert!(enable.errors.is_empty(), "{:?}", enable.errors);
+    assert_eq!(
+        enable.data.into_json().expect("json")["enableApiEndpoint"]["status"],
+        "active"
+    );
+
+    let disable = schema
+        .execute(authed(format!(
+            r#"mutation {{ disableApiEndpoint(id: "{id}") {{ status }} }}"#
+        )))
+        .await;
+    assert!(disable.errors.is_empty(), "{:?}", disable.errors);
+    assert_eq!(
+        disable.data.into_json().expect("json")["disableApiEndpoint"]["status"],
+        "disabled"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn service_context_creation_requires_super_admin() {
+    let pool = common::pool().await;
+    let schema = build_schema(state(pool.clone(), active_keys(&pool).await));
+    let suffix = Uuid::new_v4();
+    let template_id = template(
+        &pool,
+        &format!("endpoint_service_template_{suffix}"),
+        "{ health }",
+    )
+    .await;
+    let ordinary_entity_id: Uuid = sqlx::query_scalar(
+        r#"INSERT INTO entities (kind, name, status, attributes)
+           VALUES ('human', $1, 'active', '{}')
+           RETURNING id"#,
+    )
+    .bind(format!("endpoint-non-admin-{suffix}"))
+    .fetch_one(&pool)
+    .await
+    .expect("ordinary entity");
+
+    let response = schema
+        .execute(
+            GraphqlRequest::new(format!(
+                r#"
+                mutation {{
+                  createApiEndpoint(input: {{
+                    key: "endpoint_service_{suffix}",
+                    name: "Service endpoint",
+                    method: "POST",
+                    path: "/api/custom/service-{suffix}",
+                    templateId: "{template_id}",
+                    authMode: "service_context",
+                    serviceEntityId: "{ordinary_entity_id}"
+                  }}) {{ id }}
+                }}
+                "#
+            ))
+            .data(AuthContext {
+                entity_id: ordinary_entity_id,
+                tenant_id: None,
+                session_id: None,
+            }),
+        )
+        .await;
+
+    assert!(!response.errors.is_empty());
+}
+
+#[tokio::test]
+#[ignore]
+async fn custom_endpoint_route_runs_as_caller_and_writes_audit_row() {
+    let pool = common::pool().await;
+    let active_keys = active_keys(&pool).await;
+    let token = admin_token(&pool, &active_keys).await;
+    let state = state(pool.clone(), active_keys);
+    let app = create_router(state);
+    let suffix = Uuid::new_v4();
+    let template_id = template(
+        &pool,
+        &format!("endpoint_caller_template_{suffix}"),
+        "query Caller($id: ID!) { session(id: $id) { entityId } }",
+    )
+    .await;
+    let path = format!("/api/custom/caller-{suffix}");
+    let mut req = endpoint_req(&format!("endpoint_caller_{suffix}"), &path, template_id);
+    req.status = Some("active".into());
+    req.variables_mapping = json!({"id": "$auth.sessionId"});
+    req.response_mapping = json!({"data": "$.session"});
+    let endpoint = api_endpoint_repo::create_api_endpoint(&pool, req, Some(common::admin_id()))
+        .await
+        .expect("create active endpoint");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(&path)
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from("{}"))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let json: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(json["data"]["entityId"], common::admin_id().to_string());
+
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM api_endpoint_executions WHERE endpoint_id = $1 AND status = 'success'",
+    )
+    .bind(endpoint.id)
+    .fetch_one(&pool)
+    .await
+    .expect("audit count");
+    assert!(count >= 1);
+}
+
+#[tokio::test]
+#[ignore]
+async fn custom_endpoint_unauthorized_caller_is_denied_and_audited() {
+    let pool = common::pool().await;
+    let active_keys = active_keys(&pool).await;
+    let state = state(pool.clone(), active_keys);
+    let app = create_router(state);
+    let suffix = Uuid::new_v4();
+    let template_id = template(
+        &pool,
+        &format!("endpoint_denied_template_{suffix}"),
+        "{ health }",
+    )
+    .await;
+    let path = format!("/api/custom/denied-{suffix}");
+    let mut req = endpoint_req(&format!("endpoint_denied_{suffix}"), &path, template_id);
+    req.status = Some("active".into());
+    let endpoint = api_endpoint_repo::create_api_endpoint(&pool, req, Some(common::admin_id()))
+        .await
+        .expect("create active endpoint");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(&path)
+                .header("Content-Type", "application/json")
+                .body(Body::from("{}"))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM api_endpoint_executions WHERE endpoint_id = $1 AND status = 'denied'",
+    )
+    .bind(endpoint.id)
+    .fetch_one(&pool)
+    .await
+    .expect("audit count");
+    assert!(count >= 1);
+}

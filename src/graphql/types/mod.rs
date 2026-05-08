@@ -6,7 +6,8 @@ use uuid::Uuid;
 use crate::{
     identity::service as identity_service,
     models::{
-        access as access_model, capability as capability_model, entity as entity_model,
+        access as access_model, api_endpoint as api_endpoint_model,
+        api_template as api_template_model, capability as capability_model, entity as entity_model,
         enums::{
             AuditOutcome, CredentialKind, CredentialStatus, Effect, EntityKind, EntityStatus,
             GrantKind, ScopeKind, SubjectKind, TenantStatus,
@@ -15,6 +16,8 @@ use crate::{
         role as role_model, session as session_model, tenant as tenant_model, token as token_model,
     },
 };
+
+use api_template_model::{ApiTemplateOperationKind, ApiTemplateStatus};
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 #[graphql(name = "EntityKind", rename_items = "snake_case")]
@@ -88,6 +91,22 @@ pub enum GqlAuditOutcome {
     Allow,
     Deny,
     Error,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(name = "ApiTemplateOperationKind", rename_items = "snake_case")]
+pub enum GqlApiTemplateOperationKind {
+    Query,
+    Mutation,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(name = "ApiTemplateStatus", rename_items = "snake_case")]
+pub enum GqlApiTemplateStatus {
+    Draft,
+    Active,
+    Deprecated,
+    Disabled,
 }
 
 pub struct Profile(pub profile_model::Profile);
@@ -330,6 +349,152 @@ impl Resource {
 
     async fn attributes(&self) -> &Value {
         &self.0.attributes
+    }
+
+    async fn created_at(&self) -> String {
+        timestamp(self.0.created_at)
+    }
+
+    async fn updated_at(&self) -> String {
+        timestamp(self.0.updated_at)
+    }
+}
+
+pub struct ApiTemplate(pub api_template_model::ApiTemplate);
+
+#[Object]
+impl ApiTemplate {
+    async fn id(&self) -> ID {
+        id(self.0.id)
+    }
+
+    async fn tenant_id(&self) -> Option<ID> {
+        self.0.tenant_id.map(id)
+    }
+
+    async fn key(&self) -> &str {
+        &self.0.key
+    }
+
+    async fn name(&self) -> &str {
+        &self.0.name
+    }
+
+    async fn description(&self) -> Option<&str> {
+        self.0.description.as_deref()
+    }
+
+    async fn operation_kind(&self) -> GqlApiTemplateOperationKind {
+        GqlApiTemplateOperationKind::from(&self.0.operation_kind)
+    }
+
+    async fn graphql(&self) -> &str {
+        &self.0.graphql
+    }
+
+    async fn variables_schema(&self) -> &Value {
+        &self.0.variables_schema
+    }
+
+    async fn default_variables(&self) -> &Value {
+        &self.0.default_variables
+    }
+
+    async fn result_selector(&self) -> &Value {
+        &self.0.result_selector
+    }
+
+    async fn tags(&self) -> &[String] {
+        &self.0.tags
+    }
+
+    async fn status(&self) -> GqlApiTemplateStatus {
+        GqlApiTemplateStatus::from(&self.0.status)
+    }
+
+    async fn created_by(&self) -> Option<ID> {
+        self.0.created_by.map(id)
+    }
+
+    async fn updated_by(&self) -> Option<ID> {
+        self.0.updated_by.map(id)
+    }
+
+    async fn created_at(&self) -> String {
+        timestamp(self.0.created_at)
+    }
+
+    async fn updated_at(&self) -> String {
+        timestamp(self.0.updated_at)
+    }
+}
+
+pub struct ApiEndpoint(pub api_endpoint_model::ApiEndpoint);
+
+#[Object]
+impl ApiEndpoint {
+    async fn id(&self) -> ID {
+        id(self.0.id)
+    }
+
+    async fn tenant_id(&self) -> Option<ID> {
+        self.0.tenant_id.map(id)
+    }
+
+    async fn key(&self) -> &str {
+        &self.0.key
+    }
+
+    async fn name(&self) -> &str {
+        &self.0.name
+    }
+
+    async fn description(&self) -> Option<&str> {
+        self.0.description.as_deref()
+    }
+
+    async fn method(&self) -> &str {
+        &self.0.method
+    }
+
+    async fn path(&self) -> &str {
+        &self.0.path
+    }
+
+    async fn template_id(&self) -> ID {
+        id(self.0.template_id)
+    }
+
+    async fn auth_mode(&self) -> &str {
+        &self.0.auth_mode
+    }
+
+    async fn service_entity_id(&self) -> Option<ID> {
+        self.0.service_entity_id.map(id)
+    }
+
+    async fn variables_mapping(&self) -> &Value {
+        &self.0.variables_mapping
+    }
+
+    async fn request_schema(&self) -> &Value {
+        &self.0.request_schema
+    }
+
+    async fn response_mapping(&self) -> &Value {
+        &self.0.response_mapping
+    }
+
+    async fn status(&self) -> &str {
+        &self.0.status
+    }
+
+    async fn created_by(&self) -> Option<ID> {
+        self.0.created_by.map(id)
+    }
+
+    async fn updated_by(&self) -> Option<ID> {
+        self.0.updated_by.map(id)
     }
 
     async fn created_at(&self) -> String {
@@ -720,6 +885,68 @@ pub struct UpdateResourceInput {
 }
 
 #[derive(InputObject)]
+pub struct CreateApiTemplateInput {
+    pub tenant_id: Option<ID>,
+    pub key: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub operation_kind: GqlApiTemplateOperationKind,
+    pub graphql: String,
+    pub variables_schema: Option<Value>,
+    pub default_variables: Option<Value>,
+    pub result_selector: Option<Value>,
+    pub tags: Option<Vec<String>>,
+    pub status: Option<GqlApiTemplateStatus>,
+}
+
+#[derive(InputObject)]
+pub struct UpdateApiTemplateInput {
+    pub key: Option<String>,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub operation_kind: Option<GqlApiTemplateOperationKind>,
+    pub graphql: Option<String>,
+    pub variables_schema: Option<Value>,
+    pub default_variables: Option<Value>,
+    pub result_selector: Option<Value>,
+    pub tags: Option<Vec<String>>,
+    pub status: Option<GqlApiTemplateStatus>,
+}
+
+#[derive(InputObject)]
+pub struct CreateApiEndpointInput {
+    pub tenant_id: Option<ID>,
+    pub key: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub method: String,
+    pub path: String,
+    pub template_id: ID,
+    pub auth_mode: Option<String>,
+    pub service_entity_id: Option<ID>,
+    pub variables_mapping: Option<Value>,
+    pub request_schema: Option<Value>,
+    pub response_mapping: Option<Value>,
+    pub status: Option<String>,
+}
+
+#[derive(InputObject)]
+pub struct UpdateApiEndpointInput {
+    pub key: Option<String>,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub method: Option<String>,
+    pub path: Option<String>,
+    pub template_id: Option<ID>,
+    pub auth_mode: Option<String>,
+    pub service_entity_id: Option<ID>,
+    pub variables_mapping: Option<Value>,
+    pub request_schema: Option<Value>,
+    pub response_mapping: Option<Value>,
+    pub status: Option<String>,
+}
+
+#[derive(InputObject)]
 pub struct CreateGroupInput {
     pub name: String,
     pub tenant_id: Option<ID>,
@@ -829,6 +1056,40 @@ pub struct ResourceList {
 #[Object]
 impl ResourceList {
     async fn items(&self) -> &[Resource] {
+        &self.items
+    }
+
+    async fn total(&self) -> i64 {
+        self.total
+    }
+}
+
+#[derive(Default)]
+pub struct ApiTemplateList {
+    pub items: Vec<ApiTemplate>,
+    pub total: i64,
+}
+
+#[Object]
+impl ApiTemplateList {
+    async fn items(&self) -> &[ApiTemplate] {
+        &self.items
+    }
+
+    async fn total(&self) -> i64 {
+        self.total
+    }
+}
+
+#[derive(Default)]
+pub struct ApiEndpointList {
+    pub items: Vec<ApiEndpoint>,
+    pub total: i64,
+}
+
+#[Object]
+impl ApiEndpointList {
+    async fn items(&self) -> &[ApiEndpoint] {
         &self.items
     }
 
@@ -978,6 +1239,18 @@ impl From<tenant_model::Tenant> for Tenant {
 impl From<resource_model::Resource> for Resource {
     fn from(resource: resource_model::Resource) -> Self {
         Resource(resource)
+    }
+}
+
+impl From<api_template_model::ApiTemplate> for ApiTemplate {
+    fn from(template: api_template_model::ApiTemplate) -> Self {
+        ApiTemplate(template)
+    }
+}
+
+impl From<api_endpoint_model::ApiEndpoint> for ApiEndpoint {
+    fn from(endpoint: api_endpoint_model::ApiEndpoint) -> Self {
+        ApiEndpoint(endpoint)
     }
 }
 
@@ -1164,6 +1437,24 @@ pub fn parse_optional_audit_outcome(value: Option<GqlAuditOutcome>) -> Option<Au
 
 pub fn parse_optional_credential_kind(value: Option<GqlCredentialKind>) -> Option<CredentialKind> {
     value.map(CredentialKind::from)
+}
+
+pub fn parse_api_template_operation_kind(
+    value: GqlApiTemplateOperationKind,
+) -> ApiTemplateOperationKind {
+    ApiTemplateOperationKind::from(value)
+}
+
+pub fn parse_optional_api_template_operation_kind(
+    value: Option<GqlApiTemplateOperationKind>,
+) -> Option<ApiTemplateOperationKind> {
+    value.map(ApiTemplateOperationKind::from)
+}
+
+pub fn parse_optional_api_template_status(
+    value: Option<GqlApiTemplateStatus>,
+) -> Option<ApiTemplateStatus> {
+    value.map(ApiTemplateStatus::from)
 }
 
 pub fn parse_scope_kind(value: GqlScopeKind) -> ScopeKind {
@@ -1354,6 +1645,46 @@ impl From<&CredentialKind> for GqlCredentialKind {
             CredentialKind::Password => GqlCredentialKind::Password,
             CredentialKind::ApiKey => GqlCredentialKind::ApiKey,
             CredentialKind::Certificate => GqlCredentialKind::Certificate,
+        }
+    }
+}
+
+impl From<GqlApiTemplateOperationKind> for ApiTemplateOperationKind {
+    fn from(kind: GqlApiTemplateOperationKind) -> Self {
+        match kind {
+            GqlApiTemplateOperationKind::Query => ApiTemplateOperationKind::Query,
+            GqlApiTemplateOperationKind::Mutation => ApiTemplateOperationKind::Mutation,
+        }
+    }
+}
+
+impl From<&ApiTemplateOperationKind> for GqlApiTemplateOperationKind {
+    fn from(kind: &ApiTemplateOperationKind) -> Self {
+        match kind {
+            ApiTemplateOperationKind::Query => GqlApiTemplateOperationKind::Query,
+            ApiTemplateOperationKind::Mutation => GqlApiTemplateOperationKind::Mutation,
+        }
+    }
+}
+
+impl From<GqlApiTemplateStatus> for ApiTemplateStatus {
+    fn from(status: GqlApiTemplateStatus) -> Self {
+        match status {
+            GqlApiTemplateStatus::Draft => ApiTemplateStatus::Draft,
+            GqlApiTemplateStatus::Active => ApiTemplateStatus::Active,
+            GqlApiTemplateStatus::Deprecated => ApiTemplateStatus::Deprecated,
+            GqlApiTemplateStatus::Disabled => ApiTemplateStatus::Disabled,
+        }
+    }
+}
+
+impl From<&ApiTemplateStatus> for GqlApiTemplateStatus {
+    fn from(status: &ApiTemplateStatus) -> Self {
+        match status {
+            ApiTemplateStatus::Draft => GqlApiTemplateStatus::Draft,
+            ApiTemplateStatus::Active => GqlApiTemplateStatus::Active,
+            ApiTemplateStatus::Deprecated => GqlApiTemplateStatus::Deprecated,
+            ApiTemplateStatus::Disabled => GqlApiTemplateStatus::Disabled,
         }
     }
 }

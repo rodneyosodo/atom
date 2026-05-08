@@ -55,6 +55,33 @@ ATOM_GRAPHQL_CONSOLE_ENABLED=true
 
 The console is disabled by default. Its default mode is task-first and plain-language; its advanced mode is a GraphQL explorer backed by introspection. It uses GraphQL introspection and Atom GraphQL operations only, does not inspect raw database tables, and does not provide Magistrala-specific mutations or aliases.
 
+The console also includes an API Endpoint Builder for super admins. It creates metadata-backed custom HTTP endpoints under `/api/custom/*` that execute saved generic Atom GraphQL templates and return JSON responses.
+
+- `api_template` is a saved GraphQL operation plus variable metadata.
+- `api_endpoint` is a custom HTTP route that executes one `api_template`.
+- `caller_context` executes the template with the caller's authenticated Atom context and is the default.
+- `service_context` executes with a configured service entity and should be used only for tightly controlled admin-created endpoints.
+
+Example:
+
+```text
+POST /api/custom/devices
+```
+
+can run a saved `createEntity` template with a variables mapping such as:
+
+```json
+{
+  "input.name": "$body.name",
+  "input.tenantId": "$body.tenantId",
+  "input.profileId": "$body.profileId",
+  "input.attributes": "$body.attributes",
+  "context.actorId": "$auth.entityId"
+}
+```
+
+Custom API endpoints do not inspect raw Postgres tables, do not change REST or GraphQL semantics, and do not add external-system aliases. Every execution is audited with redacted request/response summaries. Paths must stay under `/api/custom/`, request bodies are size-limited and JSON-schema validated when a request schema is configured, and active method/path duplicates are rejected.
+
 The dev playground is preloaded with helper tabs for:
 
 - logging in

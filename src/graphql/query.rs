@@ -7,6 +7,8 @@ pub struct QueryRoot(
     super::profiles::ProfileQuery,
     super::entities::EntityQuery,
     super::resources::ResourceQuery,
+    super::api_endpoints::ApiEndpointQuery,
+    super::api_templates::ApiTemplateQuery,
     super::groups::GroupQuery,
     super::credentials::CredentialQuery,
     super::policies::PolicyQuery,

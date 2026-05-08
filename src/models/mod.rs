@@ -1,4 +1,6 @@
 pub mod access;
+pub mod api_endpoint;
+pub mod api_template;
 pub mod capability;
 pub mod entity;
 pub mod enums;

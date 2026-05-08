@@ -4,6 +4,8 @@
 //! `tests/` consume this crate as a library. Module visibility mirrors the
 //! historical `mod` layout from `main.rs`.
 
+pub mod api_endpoints;
+pub mod api_templates;
 pub mod audit;
 pub mod auth;
 pub mod authz;

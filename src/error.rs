@@ -19,6 +19,8 @@ pub enum AppError {
     Forbidden,
     #[error("{0}")]
     Conflict(String),
+    #[error("{0}")]
+    PayloadTooLarge(String),
     #[error("database error")]
     Database(#[from] sqlx::Error),
     #[error("internal error")]
@@ -39,6 +41,9 @@ impl AppError {
     pub fn conflict(msg: impl Into<String>) -> Self {
         AppError::Conflict(msg.into())
     }
+    pub fn payload_too_large(msg: impl Into<String>) -> Self {
+        AppError::PayloadTooLarge(msg.into())
+    }
 }
 
 impl IntoResponse for AppError {
@@ -49,6 +54,7 @@ impl IntoResponse for AppError {
             AppError::Unauthorized(m) => (StatusCode::UNAUTHORIZED, m.clone()),
             AppError::Forbidden => (StatusCode::FORBIDDEN, "forbidden".to_string()),
             AppError::Conflict(m) => (StatusCode::CONFLICT, m.clone()),
+            AppError::PayloadTooLarge(m) => (StatusCode::PAYLOAD_TOO_LARGE, m.clone()),
             AppError::Database(e) => {
                 if let sqlx::Error::Database(db) = e {
                     match db.code().as_deref() {
@@ -105,6 +111,7 @@ impl From<AppError> for tonic::Status {
             AppError::Unauthorized(msg) => tonic::Status::unauthenticated(msg),
             AppError::Forbidden => tonic::Status::permission_denied("forbidden"),
             AppError::Conflict(msg) => tonic::Status::already_exists(msg),
+            AppError::PayloadTooLarge(msg) => tonic::Status::invalid_argument(msg),
             AppError::Database(e) => {
                 tracing::error!("db error: {e}");
                 tonic::Status::internal("database error")

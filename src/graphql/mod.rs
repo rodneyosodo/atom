@@ -1,7 +1,12 @@
 pub mod admin;
+pub mod api_endpoints;
+pub mod api_templates;
 pub mod auth;
 pub mod authz;
 pub mod console;
+mod console_css;
+mod console_html;
+mod console_js;
 pub mod credentials;
 pub mod entities;
 pub mod groups;

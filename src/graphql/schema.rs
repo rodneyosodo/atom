@@ -133,6 +133,10 @@ mod tests {
             "entity",
             "resources",
             "resource",
+            "apiTemplates",
+            "apiTemplate",
+            "apiEndpoints",
+            "apiEndpoint",
             "groups",
             "group",
             "groupMembers",
@@ -169,6 +173,13 @@ mod tests {
             "createResource",
             "updateResource",
             "deleteResource",
+            "createApiTemplate",
+            "updateApiTemplate",
+            "disableApiTemplate",
+            "createApiEndpoint",
+            "updateApiEndpoint",
+            "enableApiEndpoint",
+            "disableApiEndpoint",
             "createGroup",
             "deleteGroup",
             "addGroupMember",
@@ -226,6 +237,8 @@ mod tests {
                   effect: __type(name: "Effect") { enumValues { name } }
                   credentialKind: __type(name: "CredentialKind") { enumValues { name } }
                   auditOutcome: __type(name: "AuditOutcome") { enumValues { name } }
+                  apiTemplateOperationKind: __type(name: "ApiTemplateOperationKind") { enumValues { name } }
+                  apiTemplateStatus: __type(name: "ApiTemplateStatus") { enumValues { name } }
                 }
                 "#,
             ))
@@ -260,6 +273,14 @@ mod tests {
         assert_eq!(
             enum_names(&data, "auditOutcome"),
             set(&["allow", "deny", "error"])
+        );
+        assert_eq!(
+            enum_names(&data, "apiTemplateOperationKind"),
+            set(&["query", "mutation"])
+        );
+        assert_eq!(
+            enum_names(&data, "apiTemplateStatus"),
+            set(&["draft", "active", "deprecated", "disabled"])
         );
     }
 

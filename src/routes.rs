@@ -1,5 +1,5 @@
 use axum::{
-    routing::{delete, get, post},
+    routing::{any, delete, get, post},
     Extension, Router,
 };
 use tower_http::{
@@ -8,8 +8,8 @@ use tower_http::{
 };
 
 use crate::{
-    authz::handlers as authz, graphql, identity::handlers as identity, keys, state::AppState,
-    tenants::handlers as tenants,
+    api_endpoints::handlers as api_endpoints, authz::handlers as authz, graphql,
+    identity::handlers as identity, keys, state::AppState, tenants::handlers as tenants,
 };
 
 pub fn create_router(state: AppState) -> Router {
@@ -26,6 +26,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/health", get(identity::health))
         // GraphQL
         .route("/graphql", post(graphql::graphql_handler))
+        // Custom API endpoint executor
+        .route("/api/custom/*path", any(api_endpoints::custom_endpoint))
         // Auth
         .route("/auth/login", post(identity::login))
         .route("/auth/logout", post(identity::logout))
@@ -210,7 +212,7 @@ mod tests {
     use super::create_router;
 
     #[tokio::test]
-    async fn graphql_console_route_is_not_registered_when_disabled() {
+    async fn graphql_console_route_is_not_registered_by_default() {
         let app = create_router(test_state(false));
 
         let response = app
@@ -245,9 +247,18 @@ mod tests {
             .await
             .expect("body");
         let html = String::from_utf8(body.to_vec()).expect("utf8 body");
-        assert!(html.contains("Atom GraphQL Console"));
-        assert!(html.contains("What do you want to do?"));
-        assert!(html.contains("Advanced GraphQL"));
+        for text in [
+            "Atom API Builder",
+            "What do you want to do?",
+            "Advanced GraphQL",
+            "API Builder",
+        ] {
+            assert!(html.contains(text), "missing {text}");
+        }
+
+        for operation in ["createDomain", "createClient", "createChannel"] {
+            assert!(!html.contains(operation), "unexpected {operation}");
+        }
     }
 
     fn test_state(graphql_console_enabled: bool) -> AppState {
