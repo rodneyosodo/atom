@@ -506,6 +506,43 @@ impl ApiEndpoint {
     }
 }
 
+pub struct ApiEndpointExecution(pub api_endpoint_model::ApiEndpointExecution);
+
+#[Object]
+impl ApiEndpointExecution {
+    async fn id(&self) -> ID {
+        id(self.0.id)
+    }
+
+    async fn endpoint_id(&self) -> Option<ID> {
+        self.0.endpoint_id.map(id)
+    }
+
+    async fn caller_entity_id(&self) -> Option<ID> {
+        self.0.caller_entity_id.map(id)
+    }
+
+    async fn status(&self) -> &str {
+        &self.0.status
+    }
+
+    async fn request_summary(&self) -> &Value {
+        &self.0.request_summary
+    }
+
+    async fn response_summary(&self) -> &Value {
+        &self.0.response_summary
+    }
+
+    async fn error(&self) -> Option<&str> {
+        self.0.error.as_deref()
+    }
+
+    async fn created_at(&self) -> String {
+        timestamp(self.0.created_at)
+    }
+}
+
 pub struct Group(pub group_model::Group);
 
 #[Object]
@@ -1099,6 +1136,23 @@ impl ApiEndpointList {
 }
 
 #[derive(Default)]
+pub struct ApiEndpointExecutionList {
+    pub items: Vec<ApiEndpointExecution>,
+    pub total: i64,
+}
+
+#[Object]
+impl ApiEndpointExecutionList {
+    async fn items(&self) -> &[ApiEndpointExecution] {
+        &self.items
+    }
+
+    async fn total(&self) -> i64 {
+        self.total
+    }
+}
+
+#[derive(Default)]
 pub struct GroupList {
     pub items: Vec<Group>,
     pub total: i64,
@@ -1251,6 +1305,12 @@ impl From<api_template_model::ApiTemplate> for ApiTemplate {
 impl From<api_endpoint_model::ApiEndpoint> for ApiEndpoint {
     fn from(endpoint: api_endpoint_model::ApiEndpoint) -> Self {
         ApiEndpoint(endpoint)
+    }
+}
+
+impl From<api_endpoint_model::ApiEndpointExecution> for ApiEndpointExecution {
+    fn from(execution: api_endpoint_model::ApiEndpointExecution) -> Self {
+        ApiEndpointExecution(execution)
     }
 }
 

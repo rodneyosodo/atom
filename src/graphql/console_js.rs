@@ -17,6 +17,7 @@ pub(crate) const CONSOLE_JS: &str = r######"    const state = {
       selectedApiTemplate: null,
       apiEndpoints: [],
       selectedApiEndpoint: null,
+      apiEndpointExecutions: new Map(),
       wizard: {}
     };
 
@@ -1529,7 +1530,26 @@ const result = await response.json();`;
       requestSchema
       responseMapping
       status
+      createdAt
       updatedAt
+    }
+    total
+  }
+}`;
+    }
+
+    function apiEndpointExecutionsQuery() {
+      return `query ApiEndpointExecutions($endpointId: ID!, $limit: Int = 20, $offset: Int = 0) {
+  apiEndpointExecutions(endpointId: $endpointId, limit: $limit, offset: $offset) {
+    items {
+      id
+      endpointId
+      callerEntityId
+      status
+      requestSummary
+      responseSummary
+      error
+      createdAt
     }
     total
   }
@@ -1540,13 +1560,44 @@ const result = await response.json();`;
       return `mutation CreateApiEndpoint($input: CreateApiEndpointInput!) {
   createApiEndpoint(input: $input) {
     id
+    tenantId
     key
     name
+    description
     method
     path
     templateId
     authMode
+    serviceEntityId
+    variablesMapping
+    requestSchema
+    responseMapping
     status
+    createdAt
+    updatedAt
+  }
+}`;
+    }
+
+    function updateEndpointMutation() {
+      return `mutation UpdateApiEndpoint($id: ID!, $input: UpdateApiEndpointInput!) {
+  updateApiEndpoint(id: $id, input: $input) {
+    id
+    tenantId
+    key
+    name
+    description
+    method
+    path
+    templateId
+    authMode
+    serviceEntityId
+    variablesMapping
+    requestSchema
+    responseMapping
+    status
+    createdAt
+    updatedAt
   }
 }`;
     }
@@ -1598,6 +1649,7 @@ const result = await response.json();`;
         state.selectedApiTemplate = state.apiTemplates.find((item) => item.id === state.selectedApiTemplate?.id) || null;
         renderTemplateGroups();
         fillEndpointTemplateSelect();
+        renderEndpointTemplateChooser();
         $("templateStatus").className = "badge ok";
         $("templateStatus").textContent = `${state.apiTemplates.length} templates`;
         $("templateSummary").innerHTML = state.apiTemplates.length
@@ -1608,6 +1660,7 @@ const result = await response.json();`;
         state.selectedApiTemplate = null;
         renderTemplateGroups();
         fillEndpointTemplateSelect();
+        renderEndpointTemplateChooser();
         $("templateStatus").className = "badge error";
         $("templateStatus").textContent = "Unavailable";
         $("templateSummary").innerHTML = `<span class="badge error">Template API unavailable</span> ${escapeHtml(err.message)} Local recipe fallback below still works.`;
@@ -1841,6 +1894,7 @@ const result = await response.json();`;
     function fillEndpointTemplateSelect() {
       const select = $("endpointTemplateSelect");
       if (!select) return;
+      const currentValue = select.value;
       select.innerHTML = `<option value="">Choose saved API template</option>`;
       for (const template of (state.apiTemplates || []).sort((a, b) => a.key.localeCompare(b.key))) {
         const option = document.createElement("option");
@@ -1848,16 +1902,300 @@ const result = await response.json();`;
         option.textContent = `${template.key} - ${template.name || template.key}`;
         select.appendChild(option);
       }
+      ensureEndpointTemplateOption(state.selectedApiEndpoint?.templateId, state.selectedApiEndpoint?.templateId);
+      const selectedTemplateId = currentValue || state.selectedApiEndpoint?.templateId || state.selectedApiTemplate?.id;
+      if (selectedTemplateId) select.value = selectedTemplateId;
+    }
+
+    function ensureEndpointTemplateOption(id, label = id) {
+      const select = $("endpointTemplateSelect");
+      if (!select || !id || Array.from(select.options).some((option) => option.value === id)) return;
+      const option = document.createElement("option");
+      option.value = id;
+      option.textContent = label || id;
+      select.appendChild(option);
+    }
+
+    function endpointTemplateMatches(template) {
+      const search = ($("endpointTemplateSearch")?.value || "").trim().toLowerCase();
+      const tag = ($("endpointTemplateTagFilter")?.value || "").trim().toLowerCase();
+      const haystack = [template.key, template.name, template.description, ...(template.tags || [])].join(" ").toLowerCase();
+      const tagMatch = !tag || (template.tags || []).some((item) => item.toLowerCase().includes(tag));
+      return (!search || haystack.includes(search)) && tagMatch;
+    }
+
+    function renderEndpointTemplateChooser() {
+      fillEndpointTemplateSelect();
+      const target = $("endpointTemplateChooser");
+      if (!target) return;
+      const templates = (state.apiTemplates || []).filter(endpointTemplateMatches).sort((a, b) => a.key.localeCompare(b.key));
+      target.innerHTML = "";
+      if (!templates.length) {
+        target.innerHTML = `<div class="help">No templates match this search or tag filter.</div>`;
+        updateEndpointTemplatePreview();
+        return;
+      }
+      for (const template of templates) {
+        const card = document.createElement("button");
+        card.type = "button";
+        card.className = `template-choice-card${template.id === state.selectedApiTemplate?.id ? " active" : ""}`;
+        card.innerHTML = `
+          <div class="status-row">
+            <strong>${escapeHtml(template.name || template.key)}</strong>
+            <span class="badge">${escapeHtml(template.operationKind)}</span>
+            <span class="badge">Atom</span>
+          </div>
+          <div class="muted">${escapeHtml(template.key)} · ${(template.tags || []).map((tag) => `<span class="pill">${escapeHtml(tag)}</span>`).join(" ") || "untagged"}</div>
+          <div class="help">${escapeHtml(template.description || "Runs saved GraphQL template.")}</div>
+        `;
+        card.addEventListener("click", () => selectEndpointTemplate(template.id));
+        target.appendChild(card);
+      }
+      updateEndpointTemplatePreview();
+    }
+
+    function selectEndpointTemplate(id, resetMapping = true) {
+      const template = state.apiTemplates.find((item) => item.id === id);
+      if (!template) return;
+      state.selectedApiTemplate = template;
+      $("endpointTemplateSelect").value = template.id;
+      if (!$("endpointKey").value.trim()) $("endpointKey").value = template.key.replace(/[^a-z0-9_]+/gi, "_").toLowerCase();
+      if (!$("endpointName").value.trim()) $("endpointName").value = template.name || template.key;
+      if (resetMapping) seedMappingRowsFromTemplate();
+      renderEndpointTemplateChooser();
+      previewApiEndpoint();
+    }
+
+    function updateEndpointTemplatePreview() {
+      const template = state.selectedApiTemplate || state.apiTemplates.find((item) => item.id === $("endpointTemplateSelect")?.value);
+      $("endpointTemplatePreview").textContent = template?.graphql || "";
+      $("endpointTemplateDefaults").textContent = JSON.stringify(template?.defaultVariables || {}, null, 2);
     }
 
     async function loadEndpointTemplates() {
-      if (!state.apiTemplates.length) await loadApiTemplates();
-      fillEndpointTemplateSelect();
-      $("endpointBuilderSummary").innerHTML = `<span class="badge ok">Templates loaded</span> Choose a template, then configure method and path.`;
+      try {
+        const result = await requestGraphql(templateListQuery(), {
+          tenantId: nullable($("endpointTenantId").value),
+          status: "active",
+          tag: nullable($("endpointTemplateTagFilter").value),
+          limit: 100,
+          offset: 0
+        });
+        if (result.errors?.length) throw new Error(summarizeErrors(result));
+        state.apiTemplates = result.data?.apiTemplates?.items || [];
+        state.selectedApiTemplate = state.apiTemplates.find((item) => item.id === state.selectedApiTemplate?.id) || null;
+        renderEndpointTemplateChooser();
+        $("endpointBuilderSummary").innerHTML = `<span class="badge ok">Templates loaded</span> Choose template, then configure route.`;
+      } catch (err) {
+        $("endpointTemplateChooser").innerHTML = `<div class="notice danger">Could not load templates: ${escapeHtml(err.message)}</div>`;
+        $("endpointBuilderSummary").innerHTML = `<span class="badge error">Template load failed</span> ${escapeHtml(err.message)}`;
+      }
+    }
+
+    function variablePathsFromObject(value, prefix = []) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return prefix.length ? [prefix.join(".")] : [];
+      }
+      const entries = Object.entries(value);
+      if (!entries.length) return prefix.length ? [prefix.join(".")] : [];
+      return entries.flatMap(([key, nested]) => variablePathsFromObject(nested, [...prefix, key]));
+    }
+
+    function variablePathsFromSchema(schema, prefix = []) {
+      const properties = schema?.properties;
+      if (!properties || typeof properties !== "object") return [];
+      return Object.entries(properties).flatMap(([key, nested]) => {
+        const path = [...prefix, key];
+        const childPaths = variablePathsFromSchema(nested, path);
+        return childPaths.length ? childPaths : [path.join(".")];
+      });
+    }
+
+    function endpointTemplateVariablePaths() {
+      const template = state.selectedApiTemplate || {};
+      return Array.from(new Set([
+        ...variablePathsFromObject(template.defaultVariables || {}),
+        ...variablePathsFromSchema(template.variablesSchema || {})
+      ])).sort();
+    }
+
+    function sourceValueForTarget(target) {
+      const last = target.split(".").filter(Boolean).pop() || target;
+      return last || "";
+    }
+
+    function defaultMappingRowsForTemplate() {
+      const paths = endpointTemplateVariablePaths();
+      return (paths.length ? paths : ["input.name"]).map((target) => ({
+        target,
+        sourceType: "body",
+        sourceValue: sourceValueForTarget(target)
+      }));
+    }
+
+    function parseMappingRowsFromJson() {
+      const mapping = parseJson("endpointVariablesMapping");
+      return Object.entries(mapping).map(([target, source]) => {
+        if (typeof source !== "string") {
+          return { target, sourceType: "literal", sourceValue: JSON.stringify(source) };
+        }
+        if (source === "$body") return { target, sourceType: "body", sourceValue: "" };
+        if (source.startsWith("$body.")) return { target, sourceType: "body", sourceValue: source.slice(6) };
+        if (source.startsWith("$query.")) return { target, sourceType: "query", sourceValue: source.slice(7) };
+        if (source.startsWith("$headers.")) return { target, sourceType: "header", sourceValue: source.slice(9) };
+        if (source.startsWith("$auth.")) return { target, sourceType: "auth", sourceValue: source.slice(6) };
+        return { target, sourceType: "literal", sourceValue: source };
+      });
+    }
+
+    function renderMappingRows(rows = null) {
+      const target = $("endpointMappingRows");
+      if (!target) return;
+      const mappingRows = rows || parseMappingRowsFromJson();
+      target.innerHTML = "";
+      if (!mappingRows.length) {
+        target.innerHTML = `<div class="help">No request mapping rows yet. Add a mapping row or edit the JSON directly.</div>`;
+        return;
+      }
+      mappingRows.forEach((row) => {
+        const node = document.createElement("div");
+        node.className = "mapping-row";
+        node.innerHTML = `
+          <label>Target variable path<input class="mapping-target" value="${escapeHtml(row.target)}" placeholder="input.name" /></label>
+          <div class="mapping-arrow">&lt;-</div>
+          <label>Source type<select class="mapping-source-type">
+            <option value="body"${row.sourceType === "body" ? " selected" : ""}>body</option>
+            <option value="query"${row.sourceType === "query" ? " selected" : ""}>query</option>
+            <option value="header"${row.sourceType === "header" ? " selected" : ""}>header</option>
+            <option value="auth"${row.sourceType === "auth" ? " selected" : ""}>auth</option>
+            <option value="literal"${row.sourceType === "literal" ? " selected" : ""}>literal</option>
+          </select></label>
+          <label>Source path/value<input class="mapping-source-value" value="${escapeHtml(row.sourceValue)}" placeholder="name" /></label>
+          <button type="button" class="remove-mapping-row">Remove</button>
+        `;
+        node.querySelector(".remove-mapping-row").addEventListener("click", () => {
+          node.remove();
+          syncMappingJson({ silent: true });
+        });
+        node.querySelectorAll("input, select").forEach((field) => field.addEventListener("input", () => syncMappingJson({ silent: true })));
+        target.appendChild(node);
+      });
+    }
+
+    function mappingSourceExpression(sourceType, sourceValue) {
+      const value = sourceValue.trim();
+      if (sourceType === "literal") return value;
+      if (sourceType === "body") return value ? `$body.${value}` : "$body";
+      if (sourceType === "query") return `$query.${value}`;
+      if (sourceType === "header") return `$headers.${value}`;
+      if (sourceType === "auth") return `$auth.${value}`;
+      return value;
+    }
+
+    function syncMappingJson(options = {}) {
+      const rows = Array.from(document.querySelectorAll("#endpointMappingRows .mapping-row")).map((row) => ({
+        target: row.querySelector(".mapping-target").value.trim(),
+        sourceType: row.querySelector(".mapping-source-type").value,
+        sourceValue: row.querySelector(".mapping-source-value").value
+      })).filter((row) => row.target);
+      const mapping = Object.fromEntries(rows.map((row) => [row.target, mappingSourceExpression(row.sourceType, row.sourceValue)]));
+      $("endpointVariablesMapping").value = JSON.stringify(mapping, null, 2);
+      if (!options.silent) {
+        $("endpointBuilderSummary").innerHTML = `<span class="badge ok">Request mapping updated</span> Review the variablesMapping JSON before publishing.`;
+      }
+      previewApiEndpoint();
+    }
+
+    function seedMappingRowsFromTemplate() {
+      const rows = defaultMappingRowsForTemplate();
+      renderMappingRows(rows);
+      syncMappingJson({ silent: true });
+    }
+
+    function addEndpointMappingRow() {
+      const rows = parseMappingRowsFromJson();
+      rows.push({ target: "", sourceType: "body", sourceValue: "" });
+      renderMappingRows(rows);
+    }
+
+    function templateForEndpoint(endpoint) {
+      return state.apiTemplates.find((template) => template.id === endpoint.templateId);
+    }
+
+    async function loadLastExecutionsForEndpoints() {
+      state.apiEndpointExecutions = new Map();
+      await Promise.all((state.apiEndpoints || []).map(async (endpoint) => {
+        try {
+          const result = await requestGraphql(apiEndpointExecutionsQuery(), { endpointId: endpoint.id, limit: 1, offset: 0 });
+          if (!result.errors?.length) {
+            state.apiEndpointExecutions.set(endpoint.id, result.data?.apiEndpointExecutions?.items || []);
+          }
+        } catch (_) {
+          state.apiEndpointExecutions.set(endpoint.id, []);
+        }
+      }));
+    }
+
+    function renderEndpointList() {
+      const select = $("endpointSelect");
+      select.innerHTML = `<option value="">Choose endpoint</option>`;
+      const target = $("endpointList");
+      target.innerHTML = "";
+      if (!state.apiEndpoints.length) {
+        target.innerHTML = `<div class="help">No endpoints match the current filters.</div>`;
+        return;
+      }
+      for (const endpoint of state.apiEndpoints) {
+        const template = templateForEndpoint(endpoint);
+        const lastExecution = (state.apiEndpointExecutions.get(endpoint.id) || [])[0];
+        const option = document.createElement("option");
+        option.value = endpoint.id;
+        option.textContent = `${endpoint.method} ${endpoint.path} - ${endpoint.status}`;
+        select.appendChild(option);
+
+        const card = document.createElement("section");
+        card.className = `endpoint-card${endpoint.id === state.selectedApiEndpoint?.id ? " active" : ""}`;
+        card.innerHTML = `
+          <div class="endpoint-card-header">
+            <div>
+              <div class="endpoint-card-title">
+                <span class="badge">${escapeHtml(endpoint.method)}</span>
+                <strong>${escapeHtml(endpoint.path)}</strong>
+                <span class="badge ${endpoint.status === "active" ? "ok" : endpoint.status === "disabled" ? "error" : "warn"}">${escapeHtml(endpoint.status)}</span>
+                <span class="badge">Atom</span>
+              </div>
+              <div class="help">${escapeHtml(endpoint.name || endpoint.key)}</div>
+            </div>
+            <div class="status-row">
+              <button type="button" data-endpoint-action="test" data-endpoint-id="${escapeHtml(endpoint.id)}">Test</button>
+              <button type="button" data-endpoint-action="edit" data-endpoint-id="${escapeHtml(endpoint.id)}">Edit</button>
+              <button type="button" data-endpoint-action="enable" data-endpoint-id="${escapeHtml(endpoint.id)}">Enable</button>
+              <button type="button" data-endpoint-action="disable" data-endpoint-id="${escapeHtml(endpoint.id)}">Disable</button>
+              <button type="button" data-endpoint-action="logs" data-endpoint-id="${escapeHtml(endpoint.id)}">View logs</button>
+              <button type="button" data-endpoint-action="curl" data-endpoint-id="${escapeHtml(endpoint.id)}">Copy curl</button>
+              <button type="button" data-endpoint-action="js" data-endpoint-id="${escapeHtml(endpoint.id)}">Copy JavaScript fetch</button>
+            </div>
+          </div>
+          <div class="endpoint-meta">
+            <div><strong>key</strong><br>${escapeHtml(endpoint.key)}</div>
+            <div><strong>template</strong><br>${escapeHtml(template ? `${template.name || template.key} (${template.key})` : endpoint.templateId)}</div>
+            <div><strong>auth mode</strong><br>${escapeHtml(endpoint.authMode)}</div>
+            <div><strong>tenant</strong><br>${escapeHtml(endpoint.tenantId || "global")}</div>
+            <div><strong>last execution</strong><br>${lastExecution ? escapeHtml(lastExecution.status) : "none"}</div>
+            <div><strong>createdAt</strong><br>${escapeHtml(endpoint.createdAt || "-")}</div>
+            <div><strong>updatedAt</strong><br>${escapeHtml(endpoint.updatedAt || "-")}</div>
+          </div>
+        `;
+        card.querySelectorAll("[data-endpoint-action]").forEach((button) => button.addEventListener("click", handleEndpointAction));
+        target.appendChild(card);
+      }
     }
 
     async function loadApiEndpoints() {
       try {
+        $("endpointListStatus").className = "badge warn";
+        $("endpointListStatus").textContent = "Loading";
+        if (!state.apiTemplates.length) await loadEndpointTemplates();
         const result = await requestGraphql(apiEndpointListQuery(), {
           tenantId: nullable($("endpointTenantId").value),
           status: nullable($("endpointStatusFilter").value),
@@ -1866,42 +2204,87 @@ const result = await response.json();`;
         });
         if (result.errors?.length) throw new Error(summarizeErrors(result));
         state.apiEndpoints = result.data?.apiEndpoints?.items || [];
-        const select = $("endpointSelect");
-        select.innerHTML = `<option value="">Choose endpoint</option>`;
-        for (const endpoint of state.apiEndpoints) {
-          const option = document.createElement("option");
-          option.value = endpoint.id;
-          option.textContent = `${endpoint.method} ${endpoint.path} - ${endpoint.status}`;
-          select.appendChild(option);
-        }
-        $("endpointBuilderSummary").innerHTML = `<span class="badge ok">Loaded</span> ${state.apiEndpoints.length} endpoints loaded.`;
+        await loadLastExecutionsForEndpoints();
+        renderEndpointList();
+        $("endpointListStatus").className = "badge ok";
+        $("endpointListStatus").textContent = `${state.apiEndpoints.length} endpoints`;
+        $("endpointBuilderSummary").innerHTML = `<span class="badge ok">Endpoint list loaded</span> Edit an endpoint or create a new one.`;
       } catch (err) {
+        $("endpointListStatus").className = "badge error";
+        $("endpointListStatus").textContent = "Unavailable";
+        $("endpointList").innerHTML = `<div class="notice danger">Could not load endpoints: ${escapeHtml(err.message)}</div>`;
         $("endpointBuilderSummary").innerHTML = `<span class="badge error">Load failed</span> ${escapeHtml(err.message)}`;
       }
     }
 
-    function selectApiEndpoint() {
-      const endpoint = state.apiEndpoints.find((item) => item.id === $("endpointSelect").value);
+    function updateEndpointAuthWarning() {
+      const serviceMode = $("endpointAuthMode").value === "service_context";
+      $("endpointServiceWarning").classList.toggle("hidden", !serviceMode);
+    }
+
+    function showEndpointWizardStep(step) {
+      document.querySelectorAll(".endpoint-wizard-step").forEach((item) => item.classList.toggle("active", item.id === `endpoint-step-${step}`));
+      document.querySelectorAll(".endpoint-wizard-tab").forEach((item) => item.classList.toggle("active", item.dataset.endpointStep === String(step)));
+      if (String(step) === "4") previewApiEndpoint();
+    }
+
+    function selectApiEndpoint(id = $("endpointSelect").value) {
+      const endpoint = state.apiEndpoints.find((item) => item.id === id);
       if (!endpoint) return;
       state.selectedApiEndpoint = endpoint;
+      $("endpointSelect").value = endpoint.id;
       $("endpointTenantId").value = endpoint.tenantId || "";
       $("endpointKey").value = endpoint.key || "";
       $("endpointName").value = endpoint.name || "";
       $("endpointDescription").value = endpoint.description || "";
       $("endpointMethod").value = endpoint.method || "POST";
       $("endpointPath").value = endpoint.path || "/api/custom/";
+      ensureEndpointTemplateOption(endpoint.templateId, endpoint.templateId);
       $("endpointTemplateSelect").value = endpoint.templateId || "";
       $("endpointAuthMode").value = endpoint.authMode || "caller_context";
       $("endpointServiceEntityId").value = endpoint.serviceEntityId || "";
       $("endpointVariablesMapping").value = JSON.stringify(endpoint.variablesMapping || {}, null, 2);
       $("endpointRequestSchema").value = JSON.stringify(endpoint.requestSchema || {}, null, 2);
       $("endpointResponseMapping").value = JSON.stringify(endpoint.responseMapping || {}, null, 2);
+      state.selectedApiTemplate = state.apiTemplates.find((item) => item.id === endpoint.templateId) || state.selectedApiTemplate;
+      $("endpointBuilderMode").textContent = `Editing ${endpoint.status}`;
+      updateEndpointAuthWarning();
+      renderEndpointTemplateChooser();
+      renderMappingRows();
+      renderEndpointList();
+      previewApiEndpoint();
+    }
+
+    function startNewApiEndpoint() {
+      state.selectedApiEndpoint = null;
+      $("endpointSelect").value = "";
+      $("endpointKey").value = "";
+      $("endpointName").value = "";
+      $("endpointDescription").value = "";
+      $("endpointMethod").value = "POST";
+      $("endpointPath").value = "/api/custom/devices";
+      $("endpointAuthMode").value = "caller_context";
+      $("endpointServiceEntityId").value = "";
+      $("endpointRequestSchema").value = "{}";
+      $("endpointResponseMapping").value = "{}";
+      $("endpointBuilderMode").textContent = "Draft";
+      updateEndpointAuthWarning();
+      seedMappingRowsFromTemplate();
+      renderEndpointList();
+      showEndpointWizardStep(1);
       previewApiEndpoint();
     }
 
     function apiEndpointInput(status = "draft") {
       const path = $("endpointPath").value.trim();
+      const templateId = $("endpointTemplateSelect").value || state.selectedApiEndpoint?.templateId || state.selectedApiTemplate?.id;
       if (!path.startsWith("/api/custom/")) throw new Error("Path must start with /api/custom/");
+      if (!templateId) throw new Error("Choose template before saving endpoint");
+      if (!$("endpointKey").value.trim()) throw new Error("Key is required");
+      if (!$("endpointName").value.trim()) throw new Error("Name is required");
+      if ($("endpointAuthMode").value === "service_context" && !nullable($("endpointServiceEntityId").value)) {
+        throw new Error("service_context requires serviceEntityId");
+      }
       return {
         tenantId: nullable($("endpointTenantId").value),
         key: $("endpointKey").value.trim(),
@@ -1909,7 +2292,7 @@ const result = await response.json();`;
         description: nullable($("endpointDescription").value),
         method: $("endpointMethod").value,
         path,
-        templateId: $("endpointTemplateSelect").value,
+        templateId,
         authMode: $("endpointAuthMode").value,
         serviceEntityId: nullable($("endpointServiceEntityId").value),
         variablesMapping: parseJson("endpointVariablesMapping"),
@@ -1919,55 +2302,125 @@ const result = await response.json();`;
       };
     }
 
+    function endpointRequestBody() {
+      return parseJson("endpointSampleBody");
+    }
+
+    function endpointCurlSnippet(input, body) {
+      const lines = [`curl -X ${input.method} "${window.location.origin}${input.path}"`, `  -H "Authorization: Bearer $TOKEN"`];
+      if (!["GET", "DELETE"].includes(input.method)) {
+        lines.push(`  -H "Content-Type: application/json"`, `  --data '${JSON.stringify(body, null, 2)}'`);
+      }
+      return lines.join(" \\\n");
+    }
+
+    function endpointJsSnippet(input, body) {
+      const bodyLine = ["GET", "DELETE"].includes(input.method) ? "" : `,\n  body: JSON.stringify(${JSON.stringify(body, null, 2)})`;
+      return `const response = await fetch("${input.path}", {
+  method: "${input.method}",
+  headers: {
+    "Authorization": "Bearer " + token,
+    "Content-Type": "application/json"
+  }${bodyLine}
+});
+
+const result = await response.json();`;
+    }
+
+    function updateEndpointGeneratedRequest(input, body) {
+      const curl = endpointCurlSnippet(input, body);
+      const js = endpointJsSnippet(input, body);
+      $("endpointGeneratedRequest").textContent = `${curl}\n\n${js}`;
+      $("endpointCurl").textContent = curl;
+      $("endpointJs").textContent = js;
+    }
+
     function previewApiEndpoint() {
       try {
         const input = apiEndpointInput(state.selectedApiEndpoint?.status || "draft");
+        const body = endpointRequestBody();
+        const template = state.apiTemplates.find((item) => item.id === input.templateId);
         $("endpointPreview").textContent = JSON.stringify({
           endpoint: `${input.method} ${input.path}`,
-          templateId: input.templateId,
+          name: input.name,
+          key: input.key,
+          template: template ? { id: template.id, key: template.key, name: template.name, operationKind: template.operationKind } : { id: input.templateId },
           authMode: input.authMode,
+          serviceEntityId: input.serviceEntityId,
           variablesMapping: input.variablesMapping,
           requestSchema: input.requestSchema,
           responseMapping: input.responseMapping
         }, null, 2);
-        $("endpointBuilderSummary").innerHTML = `<span class="badge ok">Preview ready</span> ${escapeHtml(input.method)} ${escapeHtml(input.path)} runs saved GraphQL template <code>${escapeHtml(input.templateId || "template id")}</code>.`;
+        updateEndpointGeneratedRequest(input, body);
+        $("endpointBuilderSummary").innerHTML = `<span class="badge ok">Preview ready</span> ${escapeHtml(input.method)} ${escapeHtml(input.path)} Runs saved GraphQL template <code>${escapeHtml(template?.key || input.templateId)}</code>.`;
       } catch (err) {
         $("endpointBuilderSummary").innerHTML = `<span class="badge error">Input error</span> ${escapeHtml(err.message)}`;
       }
     }
 
-    async function createApiEndpoint() {
-      try {
-        const input = apiEndpointInput("draft");
+    async function saveApiEndpoint(status = "draft") {
+      const input = apiEndpointInput(status);
+      if (state.selectedApiEndpoint?.id) {
+        const updateInput = { ...input };
+        delete updateInput.tenantId;
+        const result = await requestGraphql(updateEndpointMutation(), { id: state.selectedApiEndpoint.id, input: updateInput });
+        if (result.errors?.length) throw new Error(summarizeErrors(result));
+        state.selectedApiEndpoint = result.data.updateApiEndpoint;
+      } else {
         const result = await requestGraphql(createEndpointMutation(), { input });
         if (result.errors?.length) throw new Error(summarizeErrors(result));
-        const endpoint = result.data.createApiEndpoint;
-        $("endpointBuilderSummary").innerHTML = `<span class="badge ok">Created</span> Draft endpoint <code>${escapeHtml(endpoint.method)} ${escapeHtml(endpoint.path)}</code> created.`;
-        await loadApiEndpoints();
-        $("endpointSelect").value = endpoint.id;
-        selectApiEndpoint();
+        state.selectedApiEndpoint = result.data.createApiEndpoint;
+      }
+      await loadApiEndpoints();
+      $("endpointSelect").value = state.selectedApiEndpoint.id;
+      selectApiEndpoint(state.selectedApiEndpoint.id);
+      return state.selectedApiEndpoint;
+    }
+
+    async function createApiEndpoint() {
+      try {
+        const endpoint = await saveApiEndpoint(state.selectedApiEndpoint?.status || "draft");
+        $("endpointBuilderSummary").innerHTML = `<span class="badge ok">Endpoint saved</span> ${escapeHtml(endpoint.method)} ${escapeHtml(endpoint.path)} is ready to publish.`;
       } catch (err) {
-        $("endpointBuilderSummary").innerHTML = `<span class="badge error">Create failed</span> ${escapeHtml(err.message)}`;
+        $("endpointBuilderSummary").innerHTML = `<span class="badge error">Save failed</span> ${escapeHtml(err.message)}`;
       }
     }
 
     async function setSelectedApiEndpointStatus(mutationFn, label) {
       try {
-        const id = $("endpointSelect").value;
+        const id = state.selectedApiEndpoint?.id || $("endpointSelect").value;
         if (!id) throw new Error("Select an endpoint first");
         const result = await requestGraphql(mutationFn(), { id });
         if (result.errors?.length) throw new Error(summarizeErrors(result));
         $("endpointBuilderSummary").innerHTML = `<span class="badge ok">${escapeHtml(label)}</span> Endpoint ${escapeHtml(label.toLowerCase())}.`;
         await loadApiEndpoints();
+        selectApiEndpoint(id);
       } catch (err) {
         $("endpointBuilderSummary").innerHTML = `<span class="badge error">${escapeHtml(label)} failed</span> ${escapeHtml(err.message)}`;
+      }
+    }
+
+    async function publishApiEndpoint() {
+      try {
+        const endpoint = await saveApiEndpoint(state.selectedApiEndpoint?.status || "draft");
+        const result = await requestGraphql(enableEndpointMutation(), { id: endpoint.id });
+        if (result.errors?.length) throw new Error(summarizeErrors(result));
+        $("endpointBuilderSummary").innerHTML = `<span class="badge ok">Publish endpoint</span> Endpoint is active under ${escapeHtml(endpoint.path)}.`;
+        await loadApiEndpoints();
+        selectApiEndpoint(endpoint.id);
+      } catch (err) {
+        $("endpointBuilderSummary").innerHTML = `<span class="badge error">Publish failed</span> ${escapeHtml(err.message)}`;
       }
     }
 
     async function testApiEndpoint() {
       try {
         const input = apiEndpointInput(state.selectedApiEndpoint?.status || "draft");
-        const body = parseJson("endpointSampleBody");
+        if (state.selectedApiEndpoint?.status !== "active") {
+          throw new Error("Publish endpoint before running an HTTP test; only active endpoints execute under /api/custom/.");
+        }
+        const body = endpointRequestBody();
+        updateEndpointGeneratedRequest(input, body);
         const result = await fetch(input.path, {
           method: input.method,
           headers: {
@@ -1979,8 +2432,76 @@ const result = await response.json();`;
         const text = await result.text();
         $("endpointTestResult").textContent = text;
         $("endpointBuilderSummary").innerHTML = `<span class="badge ${result.ok ? "ok" : "error"}">HTTP ${result.status}</span> Custom endpoint test completed.`;
+        await viewEndpointLogs();
       } catch (err) {
+        $("endpointTestResult").textContent = err.message;
         $("endpointBuilderSummary").innerHTML = `<span class="badge error">Test failed</span> ${escapeHtml(err.message)}`;
+      }
+    }
+
+    function renderEndpointLogs(items) {
+      const target = $("endpointLogs");
+      target.innerHTML = "";
+      if (!items.length) {
+        target.innerHTML = `<div class="help">No execution logs for this endpoint yet.</div>`;
+        return;
+      }
+      for (const item of items) {
+        const row = document.createElement("section");
+        row.className = "log-row";
+        row.innerHTML = `
+          <div class="status-row">
+            <span class="badge ${item.status === "success" ? "ok" : item.status === "denied" ? "warn" : "error"}">${escapeHtml(item.status)}</span>
+            <strong>${escapeHtml(item.createdAt)}</strong>
+          </div>
+          <div class="log-grid">
+            <div><strong>caller</strong><br>${escapeHtml(item.callerEntityId || "none")}</div>
+            <div><strong>error</strong><br>${escapeHtml(item.error || "none")}</div>
+          </div>
+          <details><summary>requestSummary</summary><pre>${escapeHtml(JSON.stringify(item.requestSummary || {}, null, 2))}</pre></details>
+          <details><summary>responseSummary</summary><pre>${escapeHtml(JSON.stringify(item.responseSummary || {}, null, 2))}</pre></details>
+        `;
+        target.appendChild(row);
+      }
+    }
+
+    async function viewEndpointLogs() {
+      try {
+        const id = state.selectedApiEndpoint?.id || $("endpointSelect").value;
+        if (!id) throw new Error("Select an endpoint first");
+        const result = await requestGraphql(apiEndpointExecutionsQuery(), { endpointId: id, limit: 20, offset: 0 });
+        if (result.errors?.length) throw new Error(summarizeErrors(result));
+        const list = result.data?.apiEndpointExecutions?.items || [];
+        state.apiEndpointExecutions.set(id, list);
+        $("endpointLogsStatus").className = "badge ok";
+        $("endpointLogsStatus").textContent = `${list.length} recent logs`;
+        renderEndpointLogs(list);
+      } catch (err) {
+        $("endpointLogsStatus").className = "badge error";
+        $("endpointLogsStatus").textContent = "Unavailable";
+        $("endpointLogs").innerHTML = `<div class="notice danger">Execution logs unavailable: ${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    async function handleEndpointAction(event) {
+      const id = event.currentTarget.dataset.endpointId;
+      const action = event.currentTarget.dataset.endpointAction;
+      selectApiEndpoint(id);
+      if (action === "edit") showEndpointWizardStep(1);
+      if (action === "test") {
+        showEndpointWizardStep(4);
+        await testApiEndpoint();
+      }
+      if (action === "enable") await setSelectedApiEndpointStatus(enableEndpointMutation, "Enabled");
+      if (action === "disable") await setSelectedApiEndpointStatus(disableEndpointMutation, "Disabled");
+      if (action === "logs") await viewEndpointLogs();
+      if (action === "curl") {
+        previewApiEndpoint();
+        copyText($("endpointCurl").textContent);
+      }
+      if (action === "js") {
+        previewApiEndpoint();
+        copyText($("endpointJs").textContent);
       }
     }
 
@@ -2351,6 +2872,7 @@ safety notes:
 
     document.querySelectorAll("[data-screen]").forEach((button) => button.addEventListener("click", () => showScreen(button.dataset.screen)));
     document.querySelectorAll(".wizard-tab, .next-step").forEach((button) => button.addEventListener("click", () => showWizardStep(button.dataset.step)));
+    document.querySelectorAll(".endpoint-wizard-tab, .endpoint-next, .endpoint-back").forEach((button) => button.addEventListener("click", () => showEndpointWizardStep(button.dataset.endpointStep)));
     document.querySelectorAll(".assistant-example").forEach((button) => button.addEventListener("click", () => {
       $("assistantRequest").value = button.dataset.example;
       refreshAssistantContext();
@@ -2475,13 +2997,38 @@ safety notes:
     wire("copyTemplateJs", "click", () => copyText($("templateJs").textContent));
 
     wire("loadEndpointTemplates", "click", () => loadEndpointTemplates().catch((err) => $("endpointBuilderSummary").textContent = err.message));
+    wire("endpointTemplateSearch", "input", renderEndpointTemplateChooser);
+    wire("endpointTemplateTagFilter", "input", renderEndpointTemplateChooser);
+    wire("endpointTemplateSelect", "change", () => selectEndpointTemplate($("endpointTemplateSelect").value));
     wire("loadApiEndpoints", "click", loadApiEndpoints);
     wire("endpointSelect", "change", selectApiEndpoint);
+    wire("startNewApiEndpoint", "click", startNewApiEndpoint);
+    wire("endpointAuthMode", "change", updateEndpointAuthWarning);
+    wire("endpointPath", "input", previewApiEndpoint);
+    wire("endpointMethod", "change", previewApiEndpoint);
+    wire("endpointSampleBody", "input", previewApiEndpoint);
+    wire("endpointVariablesMapping", "input", () => {
+      try {
+        renderMappingRows();
+        previewApiEndpoint();
+      } catch (_) {}
+    });
+    wire("addEndpointMappingRow", "click", addEndpointMappingRow);
+    wire("syncEndpointMappingJson", "click", syncMappingJson);
     wire("previewApiEndpoint", "click", previewApiEndpoint);
     wire("createApiEndpoint", "click", createApiEndpoint);
-    wire("enableApiEndpoint", "click", () => setSelectedApiEndpointStatus(enableEndpointMutation, "Enabled"));
+    wire("enableApiEndpoint", "click", publishApiEndpoint);
     wire("disableApiEndpoint", "click", () => setSelectedApiEndpointStatus(disableEndpointMutation, "Disabled"));
     wire("testApiEndpoint", "click", testApiEndpoint);
+    wire("copyEndpointCurl", "click", () => {
+      previewApiEndpoint();
+      copyText($("endpointCurl").textContent);
+    });
+    wire("copyEndpointJs", "click", () => {
+      previewApiEndpoint();
+      copyText($("endpointJs").textContent);
+    });
+    wire("viewEndpointLogs", "click", viewEndpointLogs);
 
     wire("refreshAssistantContext", "click", refreshAssistantContext);
     wire("generatePrompt", "click", generatePrompt);
@@ -2492,6 +3039,9 @@ safety notes:
     renderSavedExamples();
     renderRecipeList();
     renderTemplateGroups();
+    renderEndpointTemplateChooser();
+    renderMappingRows();
+    updateEndpointAuthWarning();
     updateTemplateOutputs();
     updateStatus();
     refreshAssistantContext();

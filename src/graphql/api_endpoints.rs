@@ -4,15 +4,17 @@ use serde_json::json;
 use crate::{
     api_endpoints::repo as api_endpoint_repo,
     auth::has_global_manage,
-    models::api_endpoint::{CreateApiEndpoint, ListApiEndpoints, UpdateApiEndpoint},
+    models::api_endpoint::{
+        CreateApiEndpoint, ListApiEndpointExecutions, ListApiEndpoints, UpdateApiEndpoint,
+    },
     state::AppState,
 };
 
 use super::{
     auth::{gql_error, require_auth},
     types::{
-        parse_id, parse_optional_id, ApiEndpoint, ApiEndpointList, CreateApiEndpointInput,
-        UpdateApiEndpointInput,
+        parse_id, parse_optional_id, ApiEndpoint, ApiEndpointExecutionList, ApiEndpointList,
+        CreateApiEndpointInput, UpdateApiEndpointInput,
     },
 };
 
@@ -58,6 +60,37 @@ impl ApiEndpointQuery {
             .await
             .map_err(gql_error)?;
         Ok(endpoint.into())
+    }
+
+    async fn api_endpoint_executions(
+        &self,
+        ctx: &Context<'_>,
+        endpoint_id: ID,
+        limit: Option<i32>,
+        offset: Option<i32>,
+    ) -> Result<ApiEndpointExecutionList> {
+        let auth = require_auth(ctx)?;
+        let state = ctx.data::<AppState>()?;
+        require_platform_manage(state, auth.entity_id).await?;
+        let list = api_endpoint_repo::list_api_endpoint_executions(
+            &state.pool,
+            ListApiEndpointExecutions {
+                endpoint_id: parse_id(endpoint_id, "endpointId")?,
+                limit: limit.map(i64::from).unwrap_or(20),
+                offset: offset.map(i64::from).unwrap_or(0),
+            },
+        )
+        .await
+        .map_err(gql_error)?;
+
+        Ok(ApiEndpointExecutionList {
+            items: list
+                .items
+                .into_iter()
+                .map(super::types::ApiEndpointExecution::from)
+                .collect(),
+            total: list.total,
+        })
     }
 }
 

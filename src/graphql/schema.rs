@@ -137,6 +137,7 @@ mod tests {
             "apiTemplate",
             "apiEndpoints",
             "apiEndpoint",
+            "apiEndpointExecutions",
             "groups",
             "group",
             "groupMembers",

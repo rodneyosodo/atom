@@ -408,6 +408,35 @@ pub(crate) const CONSOLE_CSS: &str = r######"    :root {
     .wizard-step { display: none; }
     .wizard-step.active { display: block; }
 
+    .endpoint-wizard-nav {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .endpoint-wizard-tab {
+      display: grid;
+      gap: 4px;
+      min-height: 66px;
+      text-align: left;
+      padding: 10px;
+    }
+
+    .endpoint-wizard-tab.active {
+      background: var(--accent-soft);
+      border-color: #a9ded8;
+      color: var(--accent-dark);
+    }
+
+    .endpoint-wizard-tab span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .endpoint-wizard-step { display: none; }
+    .endpoint-wizard-step.active { display: block; }
+
     .builder-sections {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
@@ -486,6 +515,76 @@ pub(crate) const CONSOLE_CSS: &str = r######"    :root {
       color: var(--muted);
       font-size: 12px;
       line-height: 1.35;
+    }
+
+    .template-choice-grid, .endpoint-list, .endpoint-logs, .mapping-rows {
+      display: grid;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .template-choice-card, .endpoint-card, .log-row {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      padding: 12px;
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .template-choice-card.active, .endpoint-card.active {
+      border-color: #a9ded8;
+      background: var(--accent-soft);
+    }
+
+    .endpoint-card-header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: start;
+    }
+
+    .endpoint-card-title {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .endpoint-meta {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 6px 12px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .mapping-row {
+      display: grid;
+      grid-template-columns: minmax(130px, 1.2fr) auto minmax(120px, .8fr) minmax(150px, 1fr) auto;
+      gap: 8px;
+      align-items: end;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--soft);
+      padding: 10px;
+    }
+
+    .mapping-arrow {
+      color: var(--muted);
+      font-size: 13px;
+      padding-bottom: 10px;
+      white-space: nowrap;
+    }
+
+    .log-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
     }
 
     .schema-docs {
@@ -569,7 +668,7 @@ pub(crate) const CONSOLE_CSS: &str = r######"    :root {
     @media (max-width: 1040px) {
       .app-shell { grid-template-columns: 260px minmax(0, 1fr); }
       .docs-panel { display: none; }
-      .task-grid, .builder-sections, .wizard-nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .task-grid, .builder-sections, .wizard-nav, .endpoint-wizard-nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .topbar { grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr); }
     }
 
@@ -578,6 +677,7 @@ pub(crate) const CONSOLE_CSS: &str = r######"    :root {
       .side-scroll, .docs-scroll, .main { height: auto; }
       .side-nav { border-right: 0; border-bottom: 1px solid var(--border); }
       .workspace { height: auto; }
-      .grid, .grid-3, .split, .task-grid, .builder-sections, .wizard-nav, .recipe-preview { grid-template-columns: 1fr; }
+      .grid, .grid-3, .split, .task-grid, .builder-sections, .wizard-nav, .endpoint-wizard-nav, .recipe-preview, .mapping-row, .endpoint-card-header { grid-template-columns: 1fr; }
+      .mapping-arrow { padding-bottom: 0; }
     }
 "######;

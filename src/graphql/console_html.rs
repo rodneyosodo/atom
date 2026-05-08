@@ -538,50 +538,160 @@ pub(crate) const HTML_AFTER_CSS_BEFORE_JS: &str = r######"  </style>
 
         <section id="screen-api-endpoints" class="screen">
           <div class="panel tint">
-            <h1>API Endpoint Builder</h1>
-            <p class="help">Create a Custom API Endpoint that runs a saved GraphQL template and returns JSON. This is for super admins; REST and GraphQL semantics remain unchanged.</p>
+            <h1>Custom API Endpoint</h1>
+            <p class="help">API Endpoint Builder for management users. Runs saved GraphQL template metadata behind private REST paths under <code>/api/custom/</code>; REST and GraphQL semantics remain unchanged.</p>
+            <div class="status-row">
+              <span class="badge">Atom</span>
+              <span class="badge warn">caller_context is recommended</span>
+              <span class="badge warn">Do not store secrets, tokens, or API keys in templates or default variables.</span>
+            </div>
           </div>
           <div class="panel">
-            <h2>Custom API Endpoint</h2>
-            <p class="help">Runs saved GraphQL template metadata through generic Atom GraphQL operations only.</p>
+            <div class="response-header status-row">
+              <h2 style="margin-bottom: 0;">Endpoint list</h2>
+              <span id="endpointListStatus" class="badge warn">Not loaded</span>
+            </div>
             <div class="grid">
               <label>Tenant ID<input id="endpointTenantId" placeholder="optional tenant uuid" /></label>
               <label>Status filter<select id="endpointStatusFilter"><option value="">any</option><option selected>draft</option><option>active</option><option>disabled</option></select></label>
-              <label>Saved API template<select id="endpointTemplateSelect"></select></label>
-              <label>Existing endpoint<select id="endpointSelect"></select></label>
-              <label>Key<input id="endpointKey" placeholder="create_device_endpoint" /></label>
-              <label>Name<input id="endpointName" placeholder="Create device endpoint" /></label>
-              <label>Method<select id="endpointMethod"><option>GET</option><option selected>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select></label>
-              <label>Path<input id="endpointPath" value="/api/custom/devices" /></label>
-              <label>Auth mode<select id="endpointAuthMode"><option selected>caller_context</option><option>service_context</option></select></label>
-              <label>Service entity ID<input id="endpointServiceEntityId" placeholder="required for service_context" /></label>
             </div>
-            <label>Description<input id="endpointDescription" placeholder="optional description" /></label>
-            <label>Request schema<textarea id="endpointRequestSchema" spellcheck="false">{}</textarea></label>
-            <label>Variables mapping<textarea id="endpointVariablesMapping" spellcheck="false">{
+            <div class="actions">
+              <button id="loadApiEndpoints">Load endpoints</button>
+              <button class="primary" id="startNewApiEndpoint">New endpoint</button>
+            </div>
+            <label class="hidden">Existing endpoint<select id="endpointSelect"></select></label>
+            <div id="endpointList" class="endpoint-list">
+              <div class="help">Load endpoints to see method, path, template, auth mode, status, last execution, timestamps, and actions.</div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="response-header status-row">
+              <h2 style="margin-bottom: 0;">API Endpoint Builder</h2>
+              <span id="endpointBuilderMode" class="badge">Draft</span>
+            </div>
+            <p class="help">Create or edit a Custom API Endpoint in four steps. Endpoint paths must remain under <code>/api/custom/</code>.</p>
+            <div class="endpoint-wizard-nav">
+              <button class="endpoint-wizard-tab active" data-endpoint-step="1"><strong>Choose template</strong><span>Pick saved GraphQL</span></button>
+              <button class="endpoint-wizard-tab" data-endpoint-step="2"><strong>Configure route</strong><span>Method, path, auth</span></button>
+              <button class="endpoint-wizard-tab" data-endpoint-step="3"><strong>Map request to variables</strong><span>Request mapping</span></button>
+              <button class="endpoint-wizard-tab" data-endpoint-step="4"><strong>Test and publish</strong><span>Test request</span></button>
+            </div>
+
+            <div id="endpoint-step-1" class="endpoint-wizard-step active">
+              <h2>Choose template</h2>
+              <p class="help">Choose the saved template this endpoint will run. Atom templates keep the GraphQL operation reusable.</p>
+              <div class="grid">
+                <label>Search<input id="endpointTemplateSearch" placeholder="template name, key, description" /></label>
+                <label>Filter by tag<input id="endpointTemplateTagFilter" placeholder="setup, authz, profile" /></label>
+                <label class="hidden">Saved API template<select id="endpointTemplateSelect"></select></label>
+              </div>
+              <div class="actions">
+                <button id="loadEndpointTemplates">Load templates</button>
+                <button class="primary endpoint-next" data-endpoint-step="2">Next: Configure route</button>
+              </div>
+              <div id="endpointTemplateChooser" class="template-choice-grid"></div>
+              <div class="split" style="margin-top: 12px;">
+                <div>
+                  <h2>GraphQL preview</h2>
+                  <pre id="endpointTemplatePreview"></pre>
+                </div>
+                <div>
+                  <h2>Default variables</h2>
+                  <pre id="endpointTemplateDefaults"></pre>
+                </div>
+              </div>
+            </div>
+
+            <div id="endpoint-step-2" class="endpoint-wizard-step">
+              <h2>Configure route</h2>
+              <p class="help">The route remains private and must start with <code>/api/custom/</code>.</p>
+              <div class="notice">caller_context is recommended. It evaluates the saved template as the caller and preserves caller permissions.</div>
+              <div id="endpointServiceWarning" class="notice danger hidden">service_context can bypass caller permissions and should be used carefully. It runs this endpoint as the service entity you provide.</div>
+              <div class="grid">
+                <label>Method<select id="endpointMethod"><option>GET</option><option selected>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select></label>
+                <label>Path<input id="endpointPath" value="/api/custom/devices" /></label>
+                <label>Key<input id="endpointKey" placeholder="create_device_endpoint" /></label>
+                <label>Name<input id="endpointName" placeholder="Create device endpoint" /></label>
+                <label>Auth mode<select id="endpointAuthMode"><option selected>caller_context</option><option>service_context</option></select></label>
+                <label>Service entity ID<input id="endpointServiceEntityId" placeholder="required for service_context" /></label>
+              </div>
+              <label>Description<input id="endpointDescription" placeholder="optional description" /></label>
+              <div class="actions">
+                <button class="endpoint-back" data-endpoint-step="1">Back</button>
+                <button class="primary endpoint-next" data-endpoint-step="3">Next: Request mapping</button>
+              </div>
+            </div>
+
+            <div id="endpoint-step-3" class="endpoint-wizard-step">
+              <h2>Map request to variables</h2>
+              <p class="help">Build request mapping rows for template variables. Example: <code>input.name &lt;- body.name</code>.</p>
+              <h3>Template variables</h3>
+              <div id="endpointMappingRows" class="mapping-rows"></div>
+              <div class="actions">
+                <button id="addEndpointMappingRow">Add mapping row</button>
+                <button id="syncEndpointMappingJson">Update JSON editor</button>
+              </div>
+              <details open><summary>Advanced variablesMapping JSON</summary><textarea id="endpointVariablesMapping" spellcheck="false">{
   "input.name": "$body.name",
   "input.tenantId": "$body.tenantId",
   "input.profileId": "$body.profileId",
   "input.attributes": "$body.attributes",
   "context.actorId": "$auth.entityId"
-}</textarea></label>
-            <label>Response mapping<textarea id="endpointResponseMapping" spellcheck="false">{}</textarea></label>
-            <label>Sample request body<textarea id="endpointSampleBody" spellcheck="false">{
+}</textarea></details>
+              <details><summary>requestSchema editor</summary><textarea id="endpointRequestSchema" spellcheck="false">{}</textarea></details>
+              <details><summary>responseMapping editor</summary><textarea id="endpointResponseMapping" spellcheck="false">{}</textarea></details>
+              <div class="actions">
+                <button class="endpoint-back" data-endpoint-step="2">Back</button>
+                <button class="primary endpoint-next" data-endpoint-step="4">Next: Test request</button>
+              </div>
+            </div>
+
+            <div id="endpoint-step-4" class="endpoint-wizard-step">
+              <h2>Test and publish</h2>
+              <p class="help">Test request uses the saved active endpoint path. Publish endpoint enables the route after review.</p>
+              <label>Sample request body<textarea id="endpointSampleBody" spellcheck="false">{
   "name": "device-001",
   "attributes": {}
 }</textarea></label>
-            <div class="actions">
-              <button id="loadEndpointTemplates">Load templates</button>
-              <button id="loadApiEndpoints">Load endpoints</button>
-              <button id="previewApiEndpoint">Preview endpoint</button>
-              <button class="primary" id="createApiEndpoint">Create endpoint</button>
-              <button id="enableApiEndpoint">Enable selected</button>
-              <button id="disableApiEndpoint">Disable selected</button>
-              <button id="testApiEndpoint">Test endpoint</button>
+              <div class="actions">
+                <button id="previewApiEndpoint">Preview endpoint</button>
+                <button id="createApiEndpoint">Save draft</button>
+                <button id="testApiEndpoint">Run test</button>
+                <button class="primary" id="enableApiEndpoint">Publish endpoint</button>
+                <button id="disableApiEndpoint">Disable selected</button>
+                <button id="copyEndpointCurl">Copy curl</button>
+                <button id="copyEndpointJs">Copy JavaScript fetch</button>
+              </div>
+              <div id="endpointBuilderSummary" class="summary-box">Choose template, configure route, map request, then publish endpoint.</div>
+              <div class="split" style="margin-top: 12px;">
+                <div>
+                  <h2>Response JSON</h2>
+                  <pre id="endpointTestResult"></pre>
+                </div>
+                <div>
+                  <h2>Generated request</h2>
+                  <pre id="endpointGeneratedRequest"></pre>
+                </div>
+              </div>
+              <details><summary>Endpoint preview</summary><pre id="endpointPreview"></pre></details>
+              <details><summary>Generated curl</summary><pre id="endpointCurl"></pre></details>
+              <details><summary>Generated JavaScript fetch</summary><pre id="endpointJs"></pre></details>
             </div>
-            <div id="endpointBuilderSummary" class="summary-box">Create a draft endpoint, review it, then enable it when ready.</div>
-            <details><summary>Endpoint preview</summary><pre id="endpointPreview"></pre></details>
-            <details><summary>Test response</summary><pre id="endpointTestResult"></pre></details>
+          </div>
+
+          <div class="panel">
+            <div class="response-header status-row">
+              <h2 style="margin-bottom: 0;">Execution logs</h2>
+              <span id="endpointLogsStatus" class="badge">No endpoint selected</span>
+            </div>
+            <p class="help">Recent executions show status, caller, createdAt, error, requestSummary, and responseSummary.</p>
+            <div class="actions">
+              <button id="viewEndpointLogs">View logs</button>
+            </div>
+            <div id="endpointLogs" class="endpoint-logs">
+              <div class="help">Select an endpoint and choose View logs.</div>
+            </div>
           </div>
         </section>
 

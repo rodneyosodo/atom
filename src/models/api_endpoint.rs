@@ -77,6 +77,21 @@ pub struct ApiEndpointList {
     pub total: i64,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ListApiEndpointExecutions {
+    pub endpoint_id: Uuid,
+    #[serde(default = "default_limit")]
+    pub limit: i64,
+    #[serde(default)]
+    pub offset: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ApiEndpointExecutionList {
+    pub items: Vec<ApiEndpointExecution>,
+    pub total: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct ApiEndpointExecution {
     pub id: Uuid,

@@ -6,8 +6,8 @@ use crate::{
     api_templates::repo as api_template_repo,
     error::{db_err, AppError},
     models::api_endpoint::{
-        ApiEndpoint, ApiEndpointExecution, ApiEndpointList, CreateApiEndpoint, ListApiEndpoints,
-        UpdateApiEndpoint,
+        ApiEndpoint, ApiEndpointExecution, ApiEndpointExecutionList, ApiEndpointList,
+        CreateApiEndpoint, ListApiEndpointExecutions, ListApiEndpoints, UpdateApiEndpoint,
     },
 };
 
@@ -257,6 +257,38 @@ pub async fn record_api_endpoint_execution(
     .fetch_one(pool)
     .await
     .map_err(endpoint_db_err)
+}
+
+pub async fn list_api_endpoint_executions(
+    pool: &PgPool,
+    params: ListApiEndpointExecutions,
+) -> Result<ApiEndpointExecutionList, AppError> {
+    let limit = params.limit.clamp(1, 100);
+    let offset = params.offset.max(0);
+
+    let items = sqlx::query_as::<_, ApiEndpointExecution>(&format!(
+        r#"SELECT {API_ENDPOINT_EXECUTION_COLS} FROM api_endpoint_executions
+           WHERE endpoint_id = $1
+           ORDER BY created_at DESC
+           LIMIT $2 OFFSET $3"#,
+    ))
+    .bind(params.endpoint_id)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await
+    .map_err(endpoint_db_err)?;
+
+    let total: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*) FROM api_endpoint_executions
+           WHERE endpoint_id = $1"#,
+    )
+    .bind(params.endpoint_id)
+    .fetch_one(pool)
+    .await
+    .map_err(db_err)?;
+
+    Ok(ApiEndpointExecutionList { items, total })
 }
 
 async fn set_api_endpoint_status(
