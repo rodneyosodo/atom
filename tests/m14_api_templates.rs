@@ -37,6 +37,7 @@ fn state(pool: PgPool) -> AppState {
         admin_entity_id: ADMIN_ENTITY_ID,
         admin_secret: None,
         graphql_console_enabled: false,
+        graphql_console_dist_dir: "console/dist".into(),
     };
     let primary = LoadedKey {
         kid: "test".into(),
@@ -295,7 +296,7 @@ async fn seeded_templates_use_generic_atom_operations_only() {
              AND key = ANY($1::text[])
            ORDER BY key"#,
     )
-    .bind(&[
+    .bind([
         "create_tenant",
         "create_entity_from_profile",
         "create_resource",

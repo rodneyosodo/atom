@@ -32,28 +32,70 @@ docker-compose up postgres -d
 # 3. Run (migrations apply automatically on startup)
 cargo run
 
-# or with Docker (release image on :8080)
-docker-compose up atom
+# or with Docker (release image plus built console on :8080)
+docker compose up --build atom
 
-# or with the dev image (debug build with GraphQL playground on :8081)
-docker-compose --profile dev up atom-dev
+# or with the dev image (debug build with GraphQL playground plus console on :8081)
+docker compose --profile dev up --build atom-dev
 ```
 
 The service starts on `http://localhost:8080`.
 
-The release Docker image serves Atom on `http://localhost:8080`.
+The release Docker image serves Atom on `http://localhost:8080` and the built console at `http://localhost:8080/graphql/console`.
 
-The dev Docker image serves Atom on `http://localhost:8081`; because it is built in debug mode, the GraphQL playground is available at `http://localhost:8081/graphql/playground`.
+The dev Docker image serves Atom on `http://localhost:8081`; because it is built in debug mode, the GraphQL playground and built console are available through the Astro console at `http://localhost:8081/graphql/console`.
 
 GraphQL is available at `POST /graphql` in both images. GraphQL uses the same Bearer token authentication as REST.
 
-`/graphql/playground` is the simple debug playground. `/graphql/console` is the Atom GraphQL Console: a generic task-first API Builder for GraphQL introspection, operation exploration, guided tenant setup, profile-driven entity creation, protected resource creation, policy grants, credential management, authorization checks, and reusable GraphQL recipes. Enable it explicitly with:
+`/graphql/console` is the Atom GraphQL Console. Its Astro playground is available at `/graphql/console/playground`, and `/graphql/playground` serves the same built page when the console is enabled. Enable the console explicitly with:
 
 ```bash
 ATOM_GRAPHQL_CONSOLE_ENABLED=true
 ```
 
-The console is disabled by default. Its default mode is task-first and plain-language; its advanced mode is a GraphQL explorer backed by introspection. It uses GraphQL introspection and Atom GraphQL operations only, does not inspect raw database tables, and does not provide Magistrala-specific mutations or aliases.
+The console is disabled by default. In production, Atom serves the built Astro console from `console/dist` when that directory exists. If the built console is missing while the console is enabled, Atom returns `503 Service Unavailable` with build instructions. The console uses Atom GraphQL operations only, does not inspect raw database tables, and does not provide Magistrala-specific mutations or aliases.
+
+For local console development, run the backend and frontend separately:
+
+```bash
+# backend on http://localhost:8080
+cargo run
+
+# console on http://localhost:4321/graphql/console
+cd console
+pnpm install
+pnpm dev
+```
+
+When using the dev Docker backend on `http://localhost:8081`, point the Astro proxy at that port:
+
+```bash
+cd console
+ATOM_BACKEND_URL=http://localhost:8081 pnpm dev
+```
+
+You can also run the Astro console dev server through Docker Compose while Atom runs in the release container:
+
+```bash
+docker compose --profile console-dev up --build atom console
+```
+
+Then open `http://localhost:4321/graphql/console`. Astro proxies `/graphql` and `/api/custom/*` to the `atom` service.
+
+If a host port is already occupied, override only the host-side port:
+
+```bash
+POSTGRES_HOST_PORT=55432 ATOM_HTTP_PORT=18080 docker compose up --build atom
+```
+
+The Atom container still connects to Postgres through Docker DNS at `postgres:5432`.
+
+Production builds can be made with:
+
+```bash
+pnpm --dir console build
+cargo build --release
+```
 
 The console also includes an API Endpoint Builder for super admins. It creates metadata-backed custom HTTP endpoints under `/api/custom/*` that execute saved generic Atom GraphQL templates and return JSON responses.
 
@@ -82,18 +124,7 @@ can run a saved `createEntity` template with a variables mapping such as:
 
 Custom API endpoints do not inspect raw Postgres tables, do not change REST or GraphQL semantics, and do not add external-system aliases. Every execution is audited with redacted request/response summaries. Paths must stay under `/api/custom/`, request bodies are size-limited and JSON-schema validated when a request schema is configured, and active method/path duplicates are rejected.
 
-The dev playground is preloaded with helper tabs for:
-
-- logging in
-- listing profiles
-- creating a tenant
-- viewing tenants
-- creating an entity from a profile
-- viewing entities
-- creating a resource
-- viewing resources
-
-Authenticated playground tabs include an `Authorization: Bearer ...` placeholder. The Login tab intentionally has no Authorization header because login is unauthenticated.
+The Astro playground includes health status, saved-token awareness, starter operations, introspection-backed query/mutation search, generated starter operations with variables, response viewing, and copyable curl/fetch snippets.
 
 The GraphQL schema covers health, login/logout/session lookup, tenants, profiles, profile versions, entities, resources, groups, credentials, ownerships, roles, capabilities, policies, authz checks, audit logs, and profile-driven entity creation. REST remains available and unchanged.
 
@@ -211,6 +242,7 @@ Generic application mapping:
 | `ADMIN_SECRET`   | *(optional)*                               | Seeds admin password on first boot |
 | `ADMIN_ENTITY_ID`| `00000000-0000-0000-0000-000000000001`     | Override seeded admin UUID      |
 | `ATOM_GRAPHQL_CONSOLE_ENABLED` | `false`                     | Enables `/graphql/console` Atom GraphQL Console |
+| `ATOM_GRAPHQL_CONSOLE_DIST_DIR` | `console/dist`              | Built Astro console directory   |
 | `RUST_LOG`       | `info`                                     | Log level filter                |
 
 ---

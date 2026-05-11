@@ -297,6 +297,7 @@ mod tests {
             admin_entity_id: ADMIN_ENTITY_ID,
             admin_secret: None,
             graphql_console_enabled: false,
+            graphql_console_dist_dir: "console/dist".into(),
         };
         let primary = LoadedKey {
             kid: "test".into(),

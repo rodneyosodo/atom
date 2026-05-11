@@ -17,6 +17,8 @@ pub struct Config {
     pub admin_secret: Option<String>,
     /// Enables the local developer GraphQL console at /graphql/console.
     pub graphql_console_enabled: bool,
+    /// Directory containing the built Astro console.
+    pub graphql_console_dist_dir: String,
 }
 
 impl Config {
@@ -36,6 +38,8 @@ impl Config {
                 .unwrap_or(ADMIN_ENTITY_ID),
             admin_secret: std::env::var("ADMIN_SECRET").ok(),
             graphql_console_enabled: env_bool("ATOM_GRAPHQL_CONSOLE_ENABLED"),
+            graphql_console_dist_dir: std::env::var("ATOM_GRAPHQL_CONSOLE_DIST_DIR")
+                .unwrap_or_else(|_| "console/dist".to_string()),
         })
     }
 }

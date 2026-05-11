@@ -1,0 +1,29 @@
+---
+interface Props {
+  eyebrow: string;
+  title: string;
+  summary: string;
+  items: string[];
+}
+
+const { eyebrow, title, summary, items } = Astro.props;
+---
+
+<section class="page-heading">
+  <div>
+    <p class="eyebrow">{eyebrow}</p>
+    <h1>{title}</h1>
+  </div>
+</section>
+
+<section class="panel route-shell">
+  <div class="panel-header">
+    <div>
+      <p class="eyebrow">Phase 1 shell</p>
+      <h2>{summary}</h2>
+    </div>
+  </div>
+  <ul class="check-list">
+    {items.map((item) => <li>{item}</li>)}
+  </ul>
+</section>

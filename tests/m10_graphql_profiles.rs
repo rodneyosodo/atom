@@ -72,6 +72,7 @@ fn state(pool: PgPool) -> AppState {
         admin_entity_id: ADMIN_ENTITY_ID,
         admin_secret: None,
         graphql_console_enabled: false,
+        graphql_console_dist_dir: "console/dist".into(),
     };
     let primary = LoadedKey {
         kid: "test".into(),
@@ -151,6 +152,43 @@ async fn profile_versions_query_returns_seeded_version() {
     let versions = data["profileVersions"].as_array().expect("versions array");
     assert_eq!(versions[0]["version"], 1);
     assert_eq!(versions[0]["status"], "active");
+}
+
+#[tokio::test]
+#[ignore]
+async fn update_profile_mutation_updates_metadata_and_status() {
+    let pool = common::pool().await;
+    let profile_id = profile_with_schema(&pool, json!({})).await;
+    let schema = build_schema(state(pool));
+
+    let response = schema
+        .execute(authed(format!(
+            r#"
+            mutation {{
+              updateProfile(
+                id: "{profile_id}",
+                input: {{
+                  displayName: "Updated GraphQL Profile",
+                  description: "updated through GraphQL",
+                  status: "deprecated"
+                }}
+              ) {{
+                id
+                displayName
+                description
+                status
+              }}
+            }}
+            "#
+        )))
+        .await;
+
+    assert!(response.errors.is_empty(), "{:?}", response.errors);
+    let profile = &response.data.into_json().expect("json data")["updateProfile"];
+    assert_eq!(profile["id"], profile_id.to_string());
+    assert_eq!(profile["displayName"], "Updated GraphQL Profile");
+    assert_eq!(profile["description"], "updated through GraphQL");
+    assert_eq!(profile["status"], "deprecated");
 }
 
 #[tokio::test]

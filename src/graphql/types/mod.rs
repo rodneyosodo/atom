@@ -881,6 +881,13 @@ pub struct CreateProfileVersionInput {
 }
 
 #[derive(InputObject)]
+pub struct UpdateProfileInput {
+    pub display_name: Option<String>,
+    pub description: Option<String>,
+    pub status: Option<String>,
+}
+
+#[derive(InputObject)]
 pub struct CreateEntityInput {
     pub profile_id: Option<ID>,
     pub profile_version_id: Option<ID>,

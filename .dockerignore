@@ -5,6 +5,9 @@ docs/node_modules
 docs/.next
 docs/out
 docs/dist
+console/node_modules
+console/.astro
+console/dist
 *.log
 .env
 .env.*

@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: atom
       POSTGRES_DB: atom
     ports:
-      - "5432:5432"
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -28,9 +28,11 @@ services:
       JWT_SECRET: change-me-in-production
       JWT_EXPIRY_SECS: 3600
       ADMIN_SECRET: change-me
+      ATOM_GRAPHQL_CONSOLE_ENABLED: "true"
+      ATOM_GRAPHQL_CONSOLE_DIST_DIR: /app/console/dist
       RUST_LOG: info
     ports:
-      - "8080:8080"
+      - "${ATOM_HTTP_PORT:-8080}:8080"
 
   atom-dev:
     build:
@@ -46,11 +48,29 @@ services:
       JWT_EXPIRY_SECS: 3600
       ADMIN_SECRET: change-me
       ATOM_GRAPHQL_CONSOLE_ENABLED: "true"
+      ATOM_GRAPHQL_CONSOLE_DIST_DIR: /app/console/dist
       RUST_LOG: info
     ports:
-      - "8081:8080"
+      - "${ATOM_DEV_HTTP_PORT:-8081}:8080"
     profiles:
       - dev
 
+  console:
+    image: node:24-alpine
+    working_dir: /workspace/console
+    depends_on:
+      - atom
+    environment:
+      ATOM_BACKEND_URL: http://atom:8080
+    ports:
+      - "${CONSOLE_HTTP_PORT:-4321}:4321"
+    volumes:
+      - ./console:/workspace/console
+      - console_node_modules:/workspace/console/node_modules
+    command: sh -lc "corepack enable && pnpm install --frozen-lockfile && pnpm exec astro dev --host 0.0.0.0 --port 4321"
+    profiles:
+      - console-dev
+
 volumes:
   postgres_data:
+  console_node_modules:

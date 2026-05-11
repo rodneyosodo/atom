@@ -3,7 +3,7 @@ use serde_json::json;
 
 use crate::{
     identity::profile_repo,
-    models::profile::{CreateProfile, CreateProfileVersion, ListProfiles},
+    models::profile::{CreateProfile, CreateProfileVersion, ListProfiles, UpdateProfile},
     state::AppState,
 };
 
@@ -14,7 +14,7 @@ use super::{
     },
     types::{
         parse_id, parse_optional_id, CreateProfileInput, CreateProfileVersionInput, Profile,
-        ProfileList, ProfileVersion,
+        ProfileList, ProfileVersion, UpdateProfileInput,
     },
 };
 
@@ -166,5 +166,52 @@ impl ProfileMutation {
         .map_err(gql_error)?;
 
         Ok(version.into())
+    }
+
+    async fn update_profile(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+        input: UpdateProfileInput,
+    ) -> Result<Profile> {
+        let auth = require_auth(ctx)?;
+        let state = ctx.data::<AppState>()?;
+        let id = parse_id(id, "id")?;
+        let existing = profile_repo::get_profile(&state.pool, id)
+            .await
+            .map_err(gql_error)?;
+        require_any_capability(
+            &state.pool,
+            auth.entity_id,
+            &[
+                ("manage", scope_for_tenant(existing.tenant_id)),
+                ("write", scope_for_tenant(existing.tenant_id)),
+            ],
+        )
+        .await?;
+        validate_profile_status(input.status.as_deref())?;
+
+        let profile = profile_repo::update_profile(
+            &state.pool,
+            id,
+            UpdateProfile {
+                display_name: input.display_name,
+                description: input.description,
+                status: input.status,
+            },
+        )
+        .await
+        .map_err(gql_error)?;
+
+        Ok(profile.into())
+    }
+}
+
+fn validate_profile_status(status: Option<&str>) -> Result<()> {
+    match status {
+        Some("active" | "deprecated" | "disabled") | None => Ok(()),
+        Some(_) => Err(async_graphql::Error::new(
+            "status must be active, deprecated, or disabled",
+        )),
     }
 }

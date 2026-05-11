@@ -1,6 +1,11 @@
 # Rust build output
 /target/
 
+# Console frontend output
+/console/node_modules/
+/console/dist/
+/console/.astro/
+
 # Environment files — never commit secrets
 .env
 .env.local
@@ -26,3 +31,4 @@ Thumbs.db
 
 # Local demo tooling downloaded by Codex/VHS runs
 .local-tools/
+console/.pnpm-store
