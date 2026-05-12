@@ -554,6 +554,10 @@ a:focus-visible {
   margin-bottom: 16px;
 }
 
+.segmented.auth-tabs {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .segmented button {
   min-height: 36px;
   border: 1px solid var(--border);
@@ -676,6 +680,77 @@ legend {
   padding: 9px 10px;
   font-size: 13px;
   font-weight: 700;
+}
+
+.form-success {
+  margin: 0;
+  border-radius: 8px;
+  background: #edf8f2;
+  color: var(--green-dark);
+  padding: 9px 10px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  height: 1px;
+  flex: 1;
+  background: var(--border);
+  content: "";
+}
+
+.auth-footnote {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.auth-status-panel {
+  display: flex;
+  max-width: 560px;
+  align-items: center;
+  gap: 16px;
+}
+
+.auth-status-panel h2 {
+  margin: 0;
+}
+
+.auth-status-icon {
+  display: grid;
+  width: 52px;
+  height: 52px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--surface-muted);
+  color: var(--muted);
+}
+
+.auth-status-icon.success {
+  background: #edf8f2;
+  color: var(--green-dark);
+}
+
+.auth-status-icon.error {
+  background: #fff0ed;
+  color: var(--red);
 }
 
 .token-details {

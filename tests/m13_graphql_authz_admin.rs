@@ -26,6 +26,18 @@ fn state(pool: PgPool) -> AppState {
         jwt_expiry_secs: 3600,
         admin_entity_id: ADMIN_ENTITY_ID,
         admin_secret: None,
+        signup_enabled: false,
+        dev_allow_unverified_email_login: false,
+        public_base_url: "http://localhost:8080".into(),
+        email_verification_redirect: "http://localhost:8080/graphql/console/auth/verify-email"
+            .into(),
+        oauth_success_redirect: "http://localhost:8080".into(),
+        oauth_error_redirect: "http://localhost:8080".into(),
+        oidc_providers: vec![],
+        smtp: None,
+        email_verification_expiry_secs: 86_400,
+        oauth_state_expiry_secs: 600,
+        auth_exchange_code_expiry_secs: 300,
         graphql_console_enabled: false,
         graphql_console_dist_dir: "console/dist".into(),
     };

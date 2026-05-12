@@ -10,7 +10,7 @@ use crate::{
     state::AppState,
 };
 
-use super::types::{parse_id, LoginInput, LoginResponse, Session};
+use super::types::{parse_id, parse_optional_id, LoginInput, LoginResponse, Session};
 
 #[derive(Default)]
 pub struct AuthQuery;
@@ -47,12 +47,14 @@ impl AuthMutation {
 
         let state = ctx.data::<AppState>()?;
         let keys = state.keys.read().await;
-        let response = service::login_password(
+        let response = service::login_password_with_tenant(
             &state.pool,
             &state.config,
             &keys.primary,
             &input.identifier,
             &input.secret,
+            parse_optional_id(input.tenant_id, "tenantId")?,
+            input.tenant_route.as_deref(),
         )
         .await
         .map_err(gql_error)?;

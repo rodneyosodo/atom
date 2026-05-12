@@ -7,6 +7,21 @@ export type LoginResult = {
   entityId: string;
   sessionId: string;
   expiresAt: string;
+  emailVerified?: boolean | null;
+  verificationRequired?: boolean;
+};
+
+export type SignupResult = {
+  entity_id: string;
+  email: string;
+  verification_required: boolean;
+};
+
+export type PublicAuthConfig = {
+  signup_enabled: boolean;
+  oauth_providers: string[];
+  email_verification_required: boolean;
+  dev_allow_unverified_email_login: boolean;
 };
 
 export type GraphqlError = {

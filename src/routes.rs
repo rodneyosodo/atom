@@ -34,7 +34,17 @@ pub fn create_router(state: AppState) -> Router {
         // Custom API endpoint executor
         .route("/api/custom/*path", any(api_endpoints::custom_endpoint))
         // Auth
+        .route("/auth/public-config", get(identity::public_auth_config))
+        .route("/auth/signup", post(identity::signup))
         .route("/auth/login", post(identity::login))
+        .route("/auth/email/verify", get(identity::verify_email))
+        .route("/auth/email/resend", post(identity::resend_verification))
+        .route("/auth/oauth/:provider/start", get(identity::oauth_start))
+        .route(
+            "/auth/oauth/:provider/callback",
+            get(identity::oauth_callback),
+        )
+        .route("/auth/oauth/exchange", post(identity::oauth_exchange))
         .route("/auth/logout", post(identity::logout))
         .route("/auth/sessions/:id", get(identity::get_session))
         .route("/auth/keys/rotate", post(keys::rotate_keys))
@@ -264,7 +274,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::{
-        config::{Config, ADMIN_ENTITY_ID},
+        config::{Config, OidcProviderConfig, ADMIN_ENTITY_ID},
         keys::{ActiveKeys, LoadedKey},
         state::AppState,
     };
@@ -352,6 +362,67 @@ mod tests {
         let _ = std::fs::remove_dir_all(dist_dir);
     }
 
+    #[tokio::test]
+    async fn signup_route_is_disabled_by_default() {
+        let app = create_router(test_state(false, "console/dist-missing-for-test"));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/auth/signup")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"name":"alice","email":"alice@example.test","password":"secret"}"#,
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn public_auth_config_reports_enabled_signup_and_providers() {
+        let mut state = test_state(false, "console/dist-missing-for-test");
+        state.config.signup_enabled = true;
+        state.config.dev_allow_unverified_email_login = true;
+        state.config.oidc_providers = vec![OidcProviderConfig {
+            name: "google".into(),
+            issuer: "https://accounts.google.com".into(),
+            client_id: "client".into(),
+            client_secret: "secret".into(),
+            scopes: vec!["openid".into(), "email".into()],
+        }];
+        let app = create_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/auth/public-config")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "signup_enabled": true,
+                "oauth_providers": ["google"],
+                "email_verification_required": true,
+                "dev_allow_unverified_email_login": true
+            })
+        );
+    }
+
     fn test_state(graphql_console_enabled: bool, graphql_console_dist_dir: &str) -> AppState {
         let pool = PgPoolOptions::new()
             .connect_lazy("postgres://atom:atom@localhost/atom_test")
@@ -363,6 +434,18 @@ mod tests {
             jwt_expiry_secs: 3600,
             admin_entity_id: ADMIN_ENTITY_ID,
             admin_secret: None,
+            signup_enabled: false,
+            dev_allow_unverified_email_login: false,
+            public_base_url: "http://localhost:8080".into(),
+            email_verification_redirect: "http://localhost:8080/graphql/console/auth/verify-email"
+                .into(),
+            oauth_success_redirect: "http://localhost:8080".into(),
+            oauth_error_redirect: "http://localhost:8080".into(),
+            oidc_providers: vec![],
+            smtp: None,
+            email_verification_expiry_secs: 86_400,
+            oauth_state_expiry_secs: 600,
+            auth_exchange_code_expiry_secs: 300,
             graphql_console_enabled,
             graphql_console_dist_dir: graphql_console_dist_dir.into(),
         };

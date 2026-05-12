@@ -20,11 +20,21 @@ The following endpoints do not require authentication:
 
 ```
 GET  /health
+GET  /auth/public-config
 POST /auth/login
+POST /auth/signup   # only when ATOM_SIGNUP_ENABLED=true
+GET  /auth/email/verify
+POST /auth/email/resend
+GET  /auth/oauth/:provider/start
+GET  /auth/oauth/:provider/callback
+POST /auth/oauth/exchange
 GET  /.well-known/jwks.json
 ```
 
-All other endpoints require a valid Bearer token.
+All other endpoints require a valid Bearer token. Public signup creates a
+global human entity with `tenant_id = NULL`; tenants are assigned later through
+admin, invitation, or membership workflows. Signup does not create tenants or
+grant platform privileges.
 
 ## Sections
 

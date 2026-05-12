@@ -10,6 +10,8 @@ export const LOGIN_MUTATION = `mutation ConsoleLogin($input: LoginInput!) {
     entityId
     sessionId
     expiresAt
+    emailVerified
+    verificationRequired
   }
 }`;
 

@@ -276,6 +276,14 @@ impl LoginResponse {
     async fn expires_at(&self) -> String {
         timestamp(self.0.expires_at)
     }
+
+    async fn email_verified(&self) -> Option<bool> {
+        self.0.email_verified
+    }
+
+    async fn verification_required(&self) -> bool {
+        self.0.verification_required
+    }
 }
 
 pub struct Tenant(pub tenant_model::Tenant);
@@ -857,6 +865,8 @@ impl AuditLog {
 pub struct LoginInput {
     pub identifier: String,
     pub secret: String,
+    pub tenant_id: Option<ID>,
+    pub tenant_route: Option<String>,
     #[graphql(default = "password")]
     pub kind: String,
 }

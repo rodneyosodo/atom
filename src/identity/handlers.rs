@@ -1,7 +1,7 @@
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Redirect},
     Json,
 };
 use uuid::Uuid;
@@ -15,7 +15,10 @@ use crate::{
         enums::AuditOutcome,
         group::{AddMember, CreateGroup, ListGroups},
         profile::{CreateProfile, CreateProfileVersion, ListProfiles},
-        session::LoginRequest,
+        session::{
+            LoginRequest, OAuthCallbackQuery, OAuthExchangeRequest, OAuthStartQuery,
+            PublicAuthConfigResponse, ResendVerificationRequest, SignupRequest, VerifyEmailQuery,
+        },
         token::CreateApiKey,
     },
     state::AppState,
@@ -68,6 +71,26 @@ pub async fn health(State(state): State<AppState>) -> Result<impl IntoResponse, 
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
+pub async fn public_auth_config(State(state): State<AppState>) -> Json<PublicAuthConfigResponse> {
+    let oauth_providers = if state.config.signup_enabled {
+        state
+            .config
+            .oidc_providers
+            .iter()
+            .map(|provider| provider.name.clone())
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    Json(PublicAuthConfigResponse {
+        signup_enabled: state.config.signup_enabled,
+        oauth_providers,
+        email_verification_required: true,
+        dev_allow_unverified_email_login: state.config.dev_allow_unverified_email_login,
+    })
+}
+
 pub async fn login(
     State(state): State<AppState>,
     Json(req): Json<LoginRequest>,
@@ -76,12 +99,14 @@ pub async fn login(
     match req.kind {
         CredentialKind::Password => {
             let keys = state.keys.read().await;
-            let resp = service::login_password(
+            let resp = service::login_password_with_tenant(
                 &state.pool,
                 &state.config,
                 &keys.primary,
                 &req.identifier,
                 &req.secret,
+                req.tenant_id,
+                req.tenant_route.as_deref(),
             )
             .await?;
             Ok((StatusCode::OK, Json(resp)))
@@ -90,6 +115,75 @@ pub async fn login(
             "unsupported credential kind: {other:?}"
         ))),
     }
+}
+
+pub async fn signup(
+    State(state): State<AppState>,
+    Json(req): Json<SignupRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    if !state.config.signup_enabled {
+        return Err(AppError::Forbidden);
+    }
+
+    let resp = service::signup_human(&state.pool, &state.config, req).await?;
+    Ok((StatusCode::ACCEPTED, Json(resp)))
+}
+
+pub async fn verify_email(
+    State(state): State<AppState>,
+    Query(query): Query<VerifyEmailQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    service::verify_email(&state.pool, &query.token).await?;
+    Ok(Json(serde_json::json!({"verified": true})))
+}
+
+pub async fn resend_verification(
+    State(state): State<AppState>,
+    Json(req): Json<ResendVerificationRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    service::resend_verification(&state.pool, &state.config, &req.email).await?;
+    Ok(StatusCode::ACCEPTED)
+}
+
+pub async fn oauth_start(
+    State(state): State<AppState>,
+    Path(provider): Path<String>,
+    Query(query): Query<OAuthStartQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    if !state.config.signup_enabled {
+        return Err(AppError::Forbidden);
+    }
+    let url = service::oauth_start(&state.pool, &state.config, &provider, query.return_to).await?;
+    Ok(Redirect::temporary(&url))
+}
+
+pub async fn oauth_callback(
+    State(state): State<AppState>,
+    Path(provider): Path<String>,
+    Query(query): Query<OAuthCallbackQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let keys = state.keys.read().await;
+    let url = service::oauth_callback(
+        &state.pool,
+        &state.config,
+        &keys.primary,
+        &provider,
+        query.code,
+        query.state,
+        query.error,
+    )
+    .await;
+    Ok(Redirect::temporary(&url))
+}
+
+pub async fn oauth_exchange(
+    State(state): State<AppState>,
+    Json(req): Json<OAuthExchangeRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let keys = state.keys.read().await;
+    let resp =
+        service::oauth_exchange(&state.pool, &state.config, &keys.primary, &req.code).await?;
+    Ok(Json(resp))
 }
 
 pub async fn logout(

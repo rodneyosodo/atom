@@ -241,6 +241,14 @@ Generic application mapping:
 | `JWT_EXPIRY_SECS`| `3600`                                     | JWT lifetime in seconds         |
 | `ADMIN_SECRET`   | *(optional)*                               | Seeds admin password on first boot |
 | `ADMIN_ENTITY_ID`| `00000000-0000-0000-0000-000000000001`     | Override seeded admin UUID      |
+| `ATOM_SIGNUP_ENABLED` | `false`                              | Enables unauthenticated global human signup |
+| `ATOM_DEV_ALLOW_UNVERIFIED_EMAIL_LOGIN` | `false`           | Development-only password login before email verification |
+| `ATOM_PUBLIC_BASE_URL` | `http://localhost:8080`             | Public URL used for email verification and OAuth callbacks |
+| `ATOM_EMAIL_VERIFICATION_REDIRECT` | `/graphql/console/auth/verify-email` | Frontend URL that verifies email tokens |
+| `ATOM_OAUTH_SUCCESS_REDIRECT` | `/graphql/console/auth/callback` | Frontend URL that receives the OAuth exchange code |
+| `ATOM_OAUTH_ERROR_REDIRECT` | `/graphql/console/auth/callback` | Frontend URL that receives OAuth errors |
+| `ATOM_OIDC_PROVIDERS` | `[]`                                 | JSON array of OIDC providers, for example Google |
+| `ATOM_SMTP_HOST` / `ATOM_SMTP_FROM` | *(optional)*          | SMTP settings for signup verification email |
 | `ATOM_GRAPHQL_CONSOLE_ENABLED` | `false`                     | Enables `/graphql/console` Atom GraphQL Console |
 | `ATOM_GRAPHQL_CONSOLE_DIST_DIR` | `console/dist`              | Built Astro console directory   |
 | `RUST_LOG`       | `info`                                     | Log level filter                |
@@ -249,7 +257,8 @@ Generic application mapping:
 
 ## Authentication
 
-All endpoints except `GET /health` and `POST /auth/login` require:
+All endpoints except `GET /health`, `POST /auth/login`, email verification,
+OAuth start/callback/exchange, and optionally `POST /auth/signup` require:
 
 ```
 Authorization: Bearer <token>
@@ -261,8 +270,44 @@ Two token types are accepted:
 ```bash
 curl -s -X POST http://localhost:8080/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"identifier": "alice", "secret": "s3cr3t"}'
+  -d '{"identifier": "alice@example.com", "secret": "s3cr3t"}'
 # → {"token":"eyJ...", "entity_id":"...", "session_id":"...", "expires_at":"..."}
+```
+
+**Human signup** — disabled by default. When `ATOM_SIGNUP_ENABLED=true`,
+`/auth/signup` creates a global human entity (`tenant_id = NULL`), stores the
+normalized email, creates a password credential keyed by that email, and sends
+a verification email. It returns `202 Accepted` and does not issue a JWT until
+the email is verified. It never creates a tenant or grants platform privileges:
+
+```bash
+curl -s -X POST http://localhost:8080/auth/signup \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "Alice", "email": "alice@example.com", "password": "s3cr3t"}'
+```
+
+```bash
+curl -s 'http://localhost:8080/graphql/console/auth/verify-email?token=atomv_...'
+
+curl -s -X POST http://localhost:8080/auth/email/resend \
+  -H 'Content-Type: application/json' \
+  -d '{"email": "alice@example.com"}'
+```
+
+For local development only, `ATOM_DEV_ALLOW_UNVERIFIED_EMAIL_LOGIN=true`
+allows password login before verification while still rejecting inactive or
+suspended entities.
+
+**OIDC/OAuth signup and login** — configure providers with
+`ATOM_OIDC_PROVIDERS`. The callback requires a provider-verified email, creates
+or links a global human account, redirects with a one-time exchange code, and
+the client exchanges that code for the normal login response:
+
+```bash
+curl -i 'http://localhost:8080/auth/oauth/google/start?return_to=/dashboard'
+curl -s -X POST http://localhost:8080/auth/oauth/exchange \
+  -H 'Content-Type: application/json' \
+  -d '{"code": "atomx_..."}'
 ```
 
 **API key** — created per entity, long-lived, format `atom_<id>_<secret>`:
@@ -415,7 +460,14 @@ GET  /health
 
 ### Auth
 ```
-POST /auth/login                           {identifier, secret, kind?}
+GET  /auth/public-config
+POST /auth/signup                          {name, email, password, attributes?}
+POST /auth/login                           {identifier, secret, tenant_id? | tenant_route?, kind?}
+GET  /auth/email/verify?token=...
+POST /auth/email/resend                    {email}
+GET  /auth/oauth/:provider/start?return_to=...
+GET  /auth/oauth/:provider/callback
+POST /auth/oauth/exchange                  {code}
 POST /auth/logout
 GET  /auth/sessions/:id
 ```
@@ -469,7 +521,7 @@ DELETE /resources/:id
 
 ### Tenants
 ```
-POST   /tenants                            {name, route?, tags?, attributes?}     # RequireManage
+POST   /tenants                            {name, route?, tags?, attributes?}     # tenant.manage at platform scope
 GET    /tenants?name=&route=&status=&limit=&offset=
 GET    /tenants/:id
 PUT    /tenants/:id                        {name?, route?, tags?, attributes?}    # RequireManage
@@ -691,7 +743,7 @@ pnpm dev     # http://localhost:3000
 ## Roadmap
 
 - [ ] SCIM provisioning endpoint
-- [ ] OIDC federation (external IdP)
+- [x] OIDC federation (external IdP)
 - [ ] Workload identity (SPIFFE / X.509)
 - [ ] Audit log webhooks
 - [ ] Token introspection endpoint
