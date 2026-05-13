@@ -1,10 +1,14 @@
 use std::net::SocketAddr;
 
-use tonic::{transport::Server, Request, Response, Status};
+use tonic::{metadata::MetadataMap, transport::Server, Request, Response, Status};
 use uuid::Uuid;
 
 use crate::{
-    auth::authenticate_token, authz::engine, models::policy::AuthzRequest, state::AppState,
+    audit,
+    auth::{authenticate_token, AuthContext},
+    authz::{access, engine},
+    models::{enums::AuditOutcome, policy::AuthzRequest},
+    state::AppState,
 };
 
 // Generated code from proto/atom.proto
@@ -30,6 +34,7 @@ impl AuthzService for AtomAuthz {
         &self,
         request: Request<CheckRequest>,
     ) -> Result<Response<CheckResponse>, Status> {
+        let auth = auth_context_from_metadata(&self.state, request.metadata()).await?;
         let req = request.into_inner();
 
         let subject_id = Uuid::parse_str(&req.subject_id)
@@ -73,9 +78,42 @@ impl AuthzService for AtomAuthz {
             context,
         };
 
+        let tenant_id = access::authz_request_tenant_id(&self.state.pool, &authz_req)
+            .await
+            .map_err(Status::from)?;
+        access::require_authz_check_access(
+            &self.state.pool,
+            &auth,
+            authz_req.subject_id,
+            tenant_id,
+        )
+        .await
+        .map_err(Status::from)?;
+
         let resp = engine::evaluate(&self.state.pool, &authz_req)
             .await
             .map_err(Status::from)?;
+        audit::write(
+            &self.state.pool,
+            Some(auth.entity_id),
+            tenant_id,
+            "authz.check",
+            if resp.allowed {
+                AuditOutcome::Allow
+            } else {
+                AuditOutcome::Deny
+            },
+            serde_json::json!({
+                "subject_id": authz_req.subject_id,
+                "action": authz_req.action,
+                "resource_id": authz_req.resource_id,
+                "object_kind": authz_req.object_kind,
+                "object_id": authz_req.object_id,
+                "reason": resp.reason,
+                "transport": "grpc",
+            }),
+        )
+        .await;
 
         Ok(Response::new(CheckResponse {
             allowed: resp.allowed,
@@ -85,6 +123,21 @@ impl AuthzService for AtomAuthz {
 }
 
 // ─── AuthService ──────────────────────────────────────────────────────────────
+
+async fn auth_context_from_metadata(
+    state: &AppState,
+    metadata: &MetadataMap,
+) -> Result<AuthContext, Status> {
+    let header = metadata
+        .get("authorization")
+        .ok_or_else(|| Status::unauthenticated("missing authorization metadata"))?
+        .to_str()
+        .map_err(|_| Status::unauthenticated("invalid authorization metadata"))?;
+    let token = header
+        .strip_prefix("Bearer ")
+        .ok_or_else(|| Status::unauthenticated("expected Bearer token"))?;
+    authenticate_token(state, token).await.map_err(Status::from)
+}
 
 struct AtomAuth {
     state: AppState,

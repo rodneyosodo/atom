@@ -41,6 +41,7 @@ fn state(pool: PgPool, keys: ActiveKeys) -> AppState {
         signup_enabled: false,
         dev_allow_unverified_email_login: false,
         public_base_url: "http://localhost:8080".into(),
+        cors_allowed_origins: vec!["http://localhost:8080".into()],
         email_verification_redirect: "http://localhost:8080/graphql/console/auth/verify-email"
             .into(),
         oauth_success_redirect: "http://localhost:8080".into(),

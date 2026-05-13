@@ -2,15 +2,15 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: atom
-      POSTGRES_PASSWORD: atom
-      POSTGRES_DB: atom
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-atom}
     ports:
-      - "${POSTGRES_HOST_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U atom"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\""]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -23,13 +23,14 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://atom:atom@postgres:5432/atom
+      DATABASE_URL: postgres://${POSTGRES_USER:?set POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-atom}
       LISTEN_ADDR: 0.0.0.0:8080
-      JWT_SECRET: change-me-in-production
+      GRPC_ADDR: 127.0.0.1:8081
       JWT_EXPIRY_SECS: 3600
-      ADMIN_SECRET: change-me
-      ATOM_GRAPHQL_CONSOLE_ENABLED: "true"
+      ADMIN_SECRET: ${ADMIN_SECRET:?set ADMIN_SECRET}
+      ATOM_GRAPHQL_CONSOLE_ENABLED: "${ATOM_GRAPHQL_CONSOLE_ENABLED:-false}"
       ATOM_GRAPHQL_CONSOLE_DIST_DIR: /app/console/dist
+      ATOM_CORS_ALLOWED_ORIGINS: ${ATOM_CORS_ALLOWED_ORIGINS:-http://localhost:8080}
       RUST_LOG: info
     ports:
       - "${ATOM_HTTP_PORT:-8080}:8080"
@@ -42,13 +43,14 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://atom:atom@postgres:5432/atom
+      DATABASE_URL: postgres://${POSTGRES_USER:-atom}:${POSTGRES_PASSWORD:-atom-dev-only}@postgres:5432/${POSTGRES_DB:-atom}
       LISTEN_ADDR: 0.0.0.0:8080
-      JWT_SECRET: change-me-in-production
+      GRPC_ADDR: 127.0.0.1:8081
       JWT_EXPIRY_SECS: 3600
-      ADMIN_SECRET: change-me
+      ADMIN_SECRET: ${ADMIN_SECRET:-atom-dev-admin-password}
       ATOM_GRAPHQL_CONSOLE_ENABLED: "true"
       ATOM_GRAPHQL_CONSOLE_DIST_DIR: /app/console/dist
+      ATOM_CORS_ALLOWED_ORIGINS: ${ATOM_CORS_ALLOWED_ORIGINS:-http://localhost:8080,http://localhost:4321}
       RUST_LOG: info
     ports:
       - "${ATOM_DEV_HTTP_PORT:-8081}:8080"

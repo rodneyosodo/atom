@@ -68,17 +68,19 @@ impl IntoResponse for AppError {
                         }
                         // Foreign-key violation — most commonly an unknown tenant_id
                         Some("23503") => {
+                            tracing::warn!("foreign-key violation: {}", db.message());
                             return (
                                 StatusCode::BAD_REQUEST,
-                                Json(json!({"error": db.message()})),
+                                Json(json!({"error": "invalid reference"})),
                             )
                                 .into_response();
                         }
                         // Check violation
                         Some("23514") => {
+                            tracing::warn!("check violation: {}", db.message());
                             return (
                                 StatusCode::BAD_REQUEST,
-                                Json(json!({"error": db.message()})),
+                                Json(json!({"error": "invalid value"})),
                             )
                                 .into_response();
                         }

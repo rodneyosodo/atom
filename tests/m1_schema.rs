@@ -16,7 +16,9 @@ use common::{admin_id, admin_role_id, pool};
 async fn migration_is_idempotent() {
     // pool() runs migrations once; running again should be a no-op.
     let p = pool().await;
-    sqlx::migrate!("./migrations")
+    sqlx::migrate::Migrator::new(std::path::Path::new("./migrations"))
+        .await
+        .expect("load migrations")
         .run(&p)
         .await
         .expect("re-applying migrations must be idempotent");

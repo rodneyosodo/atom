@@ -41,6 +41,7 @@ async fn state(pool: PgPool) -> AppState {
         signup_enabled: false,
         dev_allow_unverified_email_login: false,
         public_base_url: "http://localhost:8080".into(),
+        cors_allowed_origins: vec!["http://localhost:8080".into()],
         email_verification_redirect: "http://localhost:8080/graphql/console/auth/verify-email"
             .into(),
         oauth_success_redirect: "http://localhost:8080".into(),
@@ -130,7 +131,7 @@ async fn delete_tenant_row(pool: &PgPool, tenant_id: Uuid) {
 async fn login_mutation_returns_token() {
     let pool = common::pool().await;
     let (entity_id, name) = create_human(&pool).await;
-    service::create_password(&pool, entity_id, "secret")
+    service::create_password(&pool, entity_id, "test-password-123")
         .await
         .expect("create password");
     let schema = build_schema(state(pool).await);
@@ -141,7 +142,7 @@ async fn login_mutation_returns_token() {
             mutation {{
               login(input: {{
                 identifier: "{name}",
-                secret: "secret"
+                secret: "test-password-123"
               }}) {{
                 token
                 entityId

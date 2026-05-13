@@ -163,7 +163,7 @@ async fn successful_login_emits_auth_login_allow_with_entity_id() {
     keys::bootstrap_if_needed(&p).await.expect("bootstrap keys");
     let keys = keys::load_active_keys(&p).await.expect("load keys");
     let entity_id = human(&p, None).await;
-    service::create_password(&p, entity_id, "secret")
+    service::create_password(&p, entity_id, "test-password-123")
         .await
         .expect("password");
 
@@ -177,6 +177,7 @@ async fn successful_login_emits_auth_login_allow_with_entity_id() {
         signup_enabled: false,
         dev_allow_unverified_email_login: false,
         public_base_url: "http://localhost:8080".into(),
+        cors_allowed_origins: vec!["http://localhost:8080".into()],
         email_verification_redirect: "http://localhost:8080/graphql/console/auth/verify-email"
             .into(),
         oauth_success_redirect: "http://localhost:8080".into(),
@@ -195,7 +196,7 @@ async fn successful_login_emits_auth_login_allow_with_entity_id() {
         &cfg,
         &keys.primary,
         &format!("m7-human-{entity_id}"),
-        "secret",
+        "test-password-123",
     )
     .await
     .expect("login");

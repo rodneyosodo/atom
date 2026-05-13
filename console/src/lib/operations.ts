@@ -202,6 +202,28 @@ export const GROUPS_QUERY = `query ConsoleGroups($tenantId: ID, $limit: Int, $of
   }
 }`;
 
+export const GROUP_MEMBERS_QUERY = `query ConsoleGroupMembers($groupId: ID!) {
+  groupMembers(groupId: $groupId) {
+    id kind profileId profileVersionId name tenantId status attributes createdAt updatedAt
+  }
+}`;
+
+export const CREATE_GROUP = `mutation ConsoleCreateGroup($input: CreateGroupInput!) {
+  createGroup(input: $input) { id name tenantId description createdAt updatedAt }
+}`;
+
+export const DELETE_GROUP = `mutation ConsoleDeleteGroup($id: ID!) {
+  deleteGroup(id: $id)
+}`;
+
+export const ADD_GROUP_MEMBER = `mutation ConsoleAddGroupMember($groupId: ID!, $entityId: ID!) {
+  addGroupMember(groupId: $groupId, entityId: $entityId)
+}`;
+
+export const REMOVE_GROUP_MEMBER = `mutation ConsoleRemoveGroupMember($groupId: ID!, $entityId: ID!) {
+  removeGroupMember(groupId: $groupId, entityId: $entityId)
+}`;
+
 export const POLICIES_QUERY = `query ConsolePolicies($subjectId: ID, $subjectKind: SubjectKind, $limit: Int, $offset: Int) {
   policies(subjectId: $subjectId, subjectKind: $subjectKind, limit: $limit, offset: $offset) {
     items { id tenantId subjectKind subjectId grantKind grantId scopeKind scopeRef effect conditions createdAt }

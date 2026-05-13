@@ -13,7 +13,10 @@ async fn main() -> anyhow::Result<()> {
     let cfg = config::Config::from_env()?;
     let pool = db::create_pool(&cfg.database_url).await?;
 
-    sqlx::migrate!("./migrations").run(&pool).await?;
+    sqlx::migrate::Migrator::new(std::path::Path::new("./migrations"))
+        .await?
+        .run(&pool)
+        .await?;
     tracing::info!("migrations applied");
 
     if let Some(ref secret) = cfg.admin_secret {
@@ -56,6 +59,8 @@ async fn bootstrap_admin_credentials(
     .await?;
 
     if count == 0 {
+        identity::service::validate_password_strength(secret)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
         let hash = identity::service::hash_secret(secret.as_bytes())
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         sqlx::query(

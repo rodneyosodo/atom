@@ -27,9 +27,11 @@ import {
   AUTHZ_CHECK,
   AUTHZ_EXPLAIN,
   CAPABILITIES_QUERY,
+  ADD_GROUP_MEMBER,
   CREATE_API_KEY,
   CREATE_ENDPOINT,
   CREATE_ENTITY,
+  CREATE_GROUP,
   CREATE_PASSWORD,
   CREATE_POLICY,
   CREATE_PROFILE,
@@ -38,6 +40,7 @@ import {
   CREATE_TEMPLATE,
   CREATE_TENANT,
   CREDENTIALS_QUERY,
+  DELETE_GROUP,
   DELETE_RESOURCE,
   DISABLE_ENDPOINT,
   DISABLE_TEMPLATE,
@@ -48,6 +51,7 @@ import {
   ENDPOINT_EXECUTIONS_QUERY,
   ENTITIES_QUERY,
   FREEZE_TENANT,
+  GROUP_MEMBERS_QUERY,
   GROUPS_QUERY,
   HEALTH_QUERY,
   INTROSPECTION_QUERY,
@@ -57,6 +61,7 @@ import {
   REVOKE_CREDENTIAL,
   RESOURCES_QUERY,
   ROLES_QUERY,
+  REMOVE_GROUP_MEMBER,
   TEMPLATES_QUERY,
   TENANTS_QUERY,
   UPDATE_ENDPOINT,
@@ -1088,6 +1093,127 @@ export function EntitiesPage() {
   );
 }
 
+export function GroupsPage() {
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [entities, setEntities] = useState<Entity[]>([]);
+  const [members, setMembers] = useState<Entity[]>([]);
+  const [selected, setSelected] = useState<Group | null>(null);
+  const [filter, setFilter] = useState({ tenantId: "" });
+  const [form, setForm] = useState({ tenantId: "", name: "", description: "" });
+  const [memberEntityId, setMemberEntityId] = useState("");
+  const [result, setResult] = useState<unknown>();
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function load() {
+    setBusy(true); setError(null);
+    try {
+      const [groupData, entityData] = await Promise.all([
+        gql<{ groups: ListResult<Group> }>(GROUPS_QUERY, { tenantId: compactNullable(filter.tenantId), limit: 100, offset: 0 }),
+        gql<{ entities: ListResult<Entity> }>(ENTITIES_QUERY, { limit: 100, offset: 0 }),
+      ]);
+      setGroups(groupData.groups.items);
+      setEntities(entityData.entities.items);
+      if (selected && !groupData.groups.items.some((group) => group.id === selected.id)) {
+        setSelected(null);
+        setMembers([]);
+      }
+    } catch (caught) { setError(errorMessage(caught)); } finally { setBusy(false); }
+  }
+
+  async function loadMembers(group = selected) {
+    if (!group) { setMembers([]); return; }
+    setBusy(true); setError(null);
+    try {
+      const data = await gql<{ groupMembers: Entity[] }>(GROUP_MEMBERS_QUERY, { groupId: group.id });
+      setMembers(data.groupMembers);
+    } catch (caught) { setError(errorMessage(caught)); } finally { setBusy(false); }
+  }
+
+  useEffect(() => { void load(); }, []);
+
+  async function createGroup() {
+    setBusy(true); setError(null);
+    try {
+      const data = await gql<{ createGroup: Group }>(CREATE_GROUP, { input: { tenantId: compactNullable(form.tenantId), name: form.name, description: compactNullable(form.description) } });
+      setResult(data.createGroup);
+      setSelected(data.createGroup);
+      setForm({ tenantId: "", name: "", description: "" });
+      await load();
+      await loadMembers(data.createGroup);
+    } catch (caught) { setError(errorMessage(caught)); } finally { setBusy(false); }
+  }
+
+  async function deleteGroup(id: string) {
+    setBusy(true); setError(null);
+    try {
+      setResult(await gql(DELETE_GROUP, { id }));
+      if (selected?.id === id) {
+        setSelected(null);
+        setMembers([]);
+      }
+      await load();
+    } catch (caught) { setError(errorMessage(caught)); } finally { setBusy(false); }
+  }
+
+  async function addMember() {
+    if (!selected || !memberEntityId) { return; }
+    setBusy(true); setError(null);
+    try {
+      setResult(await gql(ADD_GROUP_MEMBER, { groupId: selected.id, entityId: memberEntityId }));
+      setMemberEntityId("");
+      await loadMembers(selected);
+    } catch (caught) { setError(errorMessage(caught)); } finally { setBusy(false); }
+  }
+
+  async function removeMember(entityId: string) {
+    if (!selected) { return; }
+    setBusy(true); setError(null);
+    try {
+      setResult(await gql(REMOVE_GROUP_MEMBER, { groupId: selected.id, entityId }));
+      await loadMembers(selected);
+    } catch (caught) { setError(errorMessage(caught)); } finally { setBusy(false); }
+  }
+
+  const memberIds = new Set(members.map((member) => member.id));
+  const availableEntities = entities.filter((entity) => !memberIds.has(entity.id));
+
+  return (
+    <div className="page-stack">
+      <PageHeader eyebrow="Operate" title="Groups"><RefreshButton onClick={load} busy={busy} /></PageHeader>
+      <ErrorNotice message={error} />
+      <div className="grid-2">
+        <Panel title="Group List">
+          <div className="toolbar-grid"><input placeholder="tenantId" value={filter.tenantId} onChange={(e) => setFilter({ ...filter, tenantId: e.target.value })} /><button className="button secondary" type="button" onClick={() => void load()}>Load</button></div>
+          <MiniTable items={groups} empty="No groups loaded.">
+            {(group) => <div className="record-row" key={group.id}><button className="link-button" type="button" onClick={() => { setSelected(group); void loadMembers(group); }}><strong>{group.name}</strong><small>{group.tenantId ?? "platform"} · {group.id}</small></button><button className="button secondary danger-button" type="button" onClick={() => void deleteGroup(group.id)}><Trash2 size={16} /> Delete</button></div>}
+          </MiniTable>
+        </Panel>
+        <Panel title="Create Group">
+          <form className="stack" onSubmit={submit(createGroup)}>
+            <div className="grid-2 compact"><label><span>Tenant ID</span><input value={form.tenantId} onChange={(e) => setForm({ ...form, tenantId: e.target.value })} /></label><label><span>Name</span><input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label></div>
+            <label><span>Description</span><input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
+            <button className="button primary" type="submit" disabled={busy}>Create group</button>
+          </form>
+          <ResultPanel title="Last Result" value={result} error={error} />
+        </Panel>
+      </div>
+      <Panel title="Members" eyebrow={selected?.name ?? "No group selected"}>
+        <form className="button-row" onSubmit={submit(addMember)}>
+          <select value={memberEntityId} onChange={(e) => setMemberEntityId(e.target.value)} disabled={!selected}>
+            <option value="">Choose entity</option>
+            {availableEntities.map((entity) => <option key={entity.id} value={entity.id}>{entity.name} ({entity.kind})</option>)}
+          </select>
+          <button className="button secondary" type="submit" disabled={busy || !selected || !memberEntityId}><Plus size={16} /> Add member</button>
+        </form>
+        <MiniTable items={members} empty="No members loaded.">
+          {(entity) => <div className="record-row" key={entity.id}><div><strong>{entity.name}</strong><small>{entity.kind} · {entity.id}</small></div><StatusBadge value={entity.status} /><button className="button secondary danger-button" type="button" onClick={() => void removeMember(entity.id)}>Remove</button></div>}
+        </MiniTable>
+      </Panel>
+    </div>
+  );
+}
+
 export function ResourcesPage() {
   const [items, setItems] = useState<Resource[]>([]);
   const [selected, setSelected] = useState<Resource | null>(null);
@@ -1410,7 +1536,7 @@ function GraphqlDeveloperPage({ title, eyebrow }: { title: string; eyebrow: stri
   const [health, setHealth] = useState<unknown>();
   async function loadSchema() {
     setBusy(true); setError(null);
-    try { const data = await gql<IntrospectionData>(INTROSPECTION_QUERY); setSchema(data.__schema); } catch (caught) { setError(errorMessage(caught)); } finally { setBusy(false); }
+    try { const data = await gql<IntrospectionData>(INTROSPECTION_QUERY, {}, { auth: false }); setSchema(data.__schema); } catch (caught) { setError(errorMessage(caught)); } finally { setBusy(false); }
   }
   useEffect(() => { void loadSchema(); }, []);
   useEffect(() => {
@@ -1456,13 +1582,13 @@ function GraphqlDeveloperPage({ title, eyebrow }: { title: string; eyebrow: stri
           <dl className="token-details"><div><dt>GraphQL endpoint</dt><dd>/graphql</dd></div><div><dt>Schema types</dt><dd>{schema?.types.length ?? "not loaded"}</dd></div><div><dt>Health</dt><dd>{isJsonObject(health as JsonValue) ? JSON.stringify(health) : "checking"}</dd></div></dl>
         </Panel>
         <Panel title="Starter Examples" eyebrow="One-click operations">
-          <div className="button-row wrap"><button className="button secondary" type="button" onClick={() => { setQuery("{ health }"); setVariables("{}"); }}>Health</button><button className="button secondary" type="button" onClick={() => { setQuery("query Tenants($limit: Int = 20, $offset: Int = 0) {\n  tenants(limit: $limit, offset: $offset) {\n    items { id name route status createdAt updatedAt }\n    total\n  }\n}\n"); setVariables("{\n  \"limit\": 20,\n  \"offset\": 0\n}"); }}>List tenants</button><button className="button secondary" type="button" onClick={() => { setQuery("mutation CreateTenant($input: CreateTenantInput!) {\n  createTenant(input: $input) { id name route status }\n}\n"); setVariables("{\n  \"input\": {\n    \"name\": \"factory-a\",\n    \"route\": \"factory-a\"\n  }\n}"); }}>Create tenant</button><button className="button secondary" type="button" onClick={() => { setQuery("mutation Login($input: LoginInput!) {\n  login(input: $input) { token entityId sessionId expiresAt }\n}\n"); setVariables("{\n  \"input\": {\n    \"identifier\": \"atom-admin\",\n    \"secret\": \"change-me\",\n    \"kind\": \"password\"\n  }\n}"); }}>Login</button></div>
+          <div className="button-row wrap"><button className="button secondary" type="button" onClick={() => { setQuery("{ health }"); setVariables("{}"); }}>Health</button><button className="button secondary" type="button" onClick={() => { setQuery("query Tenants($limit: Int = 20, $offset: Int = 0) {\n  tenants(limit: $limit, offset: $offset) {\n    items { id name route status createdAt updatedAt }\n    total\n  }\n}\n"); setVariables("{\n  \"limit\": 20,\n  \"offset\": 0\n}"); }}>List tenants</button><button className="button secondary" type="button" onClick={() => { setQuery("query Groups($limit: Int = 20, $offset: Int = 0) {\n  groups(limit: $limit, offset: $offset) {\n    items { id name tenantId description createdAt updatedAt }\n    total\n  }\n}\n"); setVariables("{\n  \"limit\": 20,\n  \"offset\": 0\n}"); }}>List groups</button><button className="button secondary" type="button" onClick={() => { setQuery("mutation CreateTenant($input: CreateTenantInput!) {\n  createTenant(input: $input) { id name route status }\n}\n"); setVariables("{\n  \"input\": {\n    \"name\": \"factory-a\",\n    \"route\": \"factory-a\"\n  }\n}"); }}>Create tenant</button><button className="button secondary" type="button" onClick={() => { setQuery("mutation CreateGroup($input: CreateGroupInput!) {\n  createGroup(input: $input) { id name tenantId description }\n}\n"); setVariables("{\n  \"input\": {\n    \"name\": \"operators\"\n  }\n}"); }}>Create group</button><button className="button secondary" type="button" onClick={() => { setQuery("mutation Login($input: LoginInput!) {\n  login(input: $input) { token entityId sessionId expiresAt }\n}\n"); setVariables("{\n  \"input\": {\n    \"identifier\": \"atom-admin\",\n    \"secret\": \"change-me\",\n    \"kind\": \"password\"\n  }\n}"); }}>Login</button></div>
         </Panel>
       </div>
       <div className="grid-2 playground-grid">
         <Panel title="Schema Builder" eyebrow={`${operations.length} ${rootKind} fields`} className="schema-builder-panel">
           <div className="button-row"><button className={`button ${rootKind === "query" ? "primary" : "secondary"}`} type="button" onClick={() => setRootKind("query")}>Queries</button><button className={`button ${rootKind === "mutation" ? "primary" : "secondary"}`} type="button" onClick={() => setRootKind("mutation")}>Mutations</button></div>
-          <label><span>Search fields</span><input placeholder="profiles, createPolicy, authzCheck" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
+          <label><span>Search fields</span><input placeholder="groups, createGroup, authzCheck" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
           <div className="schema-builder-scroll">
             <MiniTable items={operations} empty="No schema loaded.">
               {(field) => {

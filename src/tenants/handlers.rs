@@ -7,7 +7,7 @@ use axum::{
 use uuid::Uuid;
 
 use crate::{
-    auth::{require_capability, AuthContext, Scope},
+    auth::{require_capability, require_list_access, require_read_access, AuthContext, Scope},
     error::AppError,
     models::{
         enums::TenantStatus,
@@ -36,18 +36,20 @@ pub async fn create_tenant(
 
 pub async fn list_tenants(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Query(params): Query<ListTenants>,
 ) -> Result<impl IntoResponse, AppError> {
+    require_list_access(&state.pool, auth.entity_id, None).await?;
     let list = repo::list_tenants(&state.pool, params).await?;
     Ok(Json(list))
 }
 
 pub async fn get_tenant(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    require_read_access(&state.pool, auth.entity_id, Some(id), id).await?;
     let tenant = repo::get_tenant(&state.pool, id).await?;
     Ok(Json(tenant))
 }

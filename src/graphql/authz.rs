@@ -1,10 +1,9 @@
 use async_graphql::{Context, Object, Result};
-use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{
     audit,
-    authz::engine,
+    authz::{access, engine},
     models::{
         access as access_model,
         enums::AuditOutcome,
@@ -28,16 +27,19 @@ impl AuthzMutation {
         ctx: &Context<'_>,
         input: AuthzCheckInput,
     ) -> Result<AuthzResponse> {
-        require_auth(ctx)?;
+        let auth = require_auth(ctx)?;
         let state = ctx.data::<AppState>()?;
         let req = authz_request(input)?;
-        let tenant_id = authz_request_tenant_id(&state.pool, &req)
+        let tenant_id = access::authz_request_tenant_id(&state.pool, &req)
+            .await
+            .map_err(gql_error)?;
+        access::require_authz_check_access(&state.pool, &auth, req.subject_id, tenant_id)
             .await
             .map_err(gql_error)?;
         let response = engine::evaluate(&state.pool, &req)
             .await
             .map_err(gql_error)?;
-        audit_authz_check(&state.pool, &req, &response, tenant_id).await;
+        audit_authz_check(&state.pool, auth.entity_id, &req, &response, tenant_id).await;
         Ok(response.into())
     }
 
@@ -50,13 +52,13 @@ impl AuthzMutation {
         let state = ctx.data::<AppState>()?;
         require_explain_access(&state.pool, auth.entity_id).await?;
         let req = authz_request(input)?;
-        let tenant_id = authz_request_tenant_id(&state.pool, &req)
+        let tenant_id = access::authz_request_tenant_id(&state.pool, &req)
             .await
             .map_err(gql_error)?;
         let response = engine::explain(&state.pool, &req)
             .await
             .map_err(gql_error)?;
-        audit_authz_explain(&state.pool, &req, &response, tenant_id).await;
+        audit_authz_explain(&state.pool, auth.entity_id, &req, &response, tenant_id).await;
         Ok(response.into())
     }
 
@@ -65,7 +67,7 @@ impl AuthzMutation {
         ctx: &Context<'_>,
         input: Vec<AuthzCheckInput>,
     ) -> Result<Vec<AuthzResponse>> {
-        require_auth(ctx)?;
+        let auth = require_auth(ctx)?;
         if input.len() > 20 {
             return Err(gql_error(crate::error::AppError::bad_request(
                 "input must contain at most 20 items",
@@ -75,13 +77,16 @@ impl AuthzMutation {
         let mut responses = Vec::with_capacity(input.len());
         for item in input {
             let req = authz_request(item)?;
-            let tenant_id = authz_request_tenant_id(&state.pool, &req)
+            let tenant_id = access::authz_request_tenant_id(&state.pool, &req)
+                .await
+                .map_err(gql_error)?;
+            access::require_authz_check_access(&state.pool, &auth, req.subject_id, tenant_id)
                 .await
                 .map_err(gql_error)?;
             let response = engine::evaluate(&state.pool, &req)
                 .await
                 .map_err(gql_error)?;
-            audit_authz_check(&state.pool, &req, &response, tenant_id).await;
+            audit_authz_check(&state.pool, auth.entity_id, &req, &response, tenant_id).await;
             responses.push(response.into());
         }
         Ok(responses)
@@ -99,53 +104,15 @@ fn authz_request(input: AuthzCheckInput) -> Result<AuthzRequest> {
     })
 }
 
-async fn authz_request_tenant_id(
-    pool: &PgPool,
-    req: &AuthzRequest,
-) -> std::result::Result<Option<Uuid>, crate::error::AppError> {
-    if req.object_kind.as_deref() == Some("tenant") {
-        return Ok(req.object_id);
-    }
-
-    if let Some(resource_id) = req.resource_id {
-        return sqlx::query_scalar::<_, Option<Uuid>>(
-            "SELECT tenant_id FROM resources WHERE id = $1",
-        )
-        .bind(resource_id)
-        .fetch_optional(pool)
-        .await
-        .map(|value| value.flatten())
-        .map_err(crate::error::db_err);
-    }
-
-    match (req.object_kind.as_deref(), req.object_id) {
-        (Some("resource"), Some(id)) => {
-            sqlx::query_scalar::<_, Option<Uuid>>("SELECT tenant_id FROM resources WHERE id = $1")
-                .bind(id)
-                .fetch_optional(pool)
-                .await
-                .map(|value| value.flatten())
-                .map_err(crate::error::db_err)
-        }
-        (Some("entity"), Some(id)) => {
-            sqlx::query_scalar::<_, Option<Uuid>>("SELECT tenant_id FROM entities WHERE id = $1")
-                .bind(id)
-                .fetch_optional(pool)
-                .await
-                .map(|value| value.flatten())
-                .map_err(crate::error::db_err)
-        }
-        _ => Ok(None),
-    }
-}
-
 async fn audit_authz_check(
-    pool: &PgPool,
+    pool: &sqlx::PgPool,
+    actor_id: Uuid,
     req: &AuthzRequest,
     response: &ModelAuthzResponse,
     tenant_id: Option<Uuid>,
 ) {
     let mut details = serde_json::json!({
+        "subject_id": req.subject_id,
         "action": req.action,
         "resource_id": req.resource_id,
         "object_kind": req.object_kind,
@@ -165,7 +132,7 @@ async fn audit_authz_check(
 
     audit::write(
         pool,
-        Some(req.subject_id),
+        Some(actor_id),
         tenant_id,
         "authz.check",
         if response.allowed {
@@ -179,12 +146,14 @@ async fn audit_authz_check(
 }
 
 async fn audit_authz_explain(
-    pool: &PgPool,
+    pool: &sqlx::PgPool,
+    actor_id: Uuid,
     req: &AuthzRequest,
     response: &access_model::AuthzExplainResponse,
     tenant_id: Option<Uuid>,
 ) {
     let mut details = serde_json::json!({
+        "subject_id": req.subject_id,
         "action": req.action,
         "resource_id": req.resource_id,
         "object_kind": req.object_kind,
@@ -202,7 +171,7 @@ async fn audit_authz_explain(
 
     audit::write(
         pool,
-        Some(req.subject_id),
+        Some(actor_id),
         tenant_id,
         "authz.explain",
         if response.allowed {

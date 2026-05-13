@@ -1177,12 +1177,12 @@ pub async fn tenant_ids_for_capability(
              AND pb.scope_ref IS NOT NULL
              AND (
                (pb.grant_kind = 'capability' AND pb.grant_id IN (
-                   SELECT id FROM capabilities WHERE name = $2
+                   SELECT id FROM capabilities WHERE name = $2 AND resource_kind IS NULL
                ))
                OR (pb.grant_kind = 'role' AND pb.grant_id IN (
                    SELECT rc.role_id FROM role_capabilities rc
                    JOIN capabilities c ON c.id = rc.capability_id
-                   WHERE c.name = $2
+                   WHERE c.name = $2 AND c.resource_kind IS NULL
                ))
              )"#,
     )

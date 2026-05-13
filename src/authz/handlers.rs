@@ -10,7 +10,10 @@ use uuid::Uuid;
 
 use crate::{
     audit,
-    auth::{has_capability_in_scope, require_capability, AuthContext, Scope},
+    auth::{
+        has_capability_in_scope, require_capability, require_explain_access, require_list_access,
+        require_policy_read, require_read_access, require_role_read, AuthContext, Scope,
+    },
     error::AppError,
     models::{
         access::{
@@ -99,46 +102,6 @@ async fn validate_tenant_owned_policy(
     }
 }
 
-async fn authz_request_tenant_id(
-    pool: &PgPool,
-    req: &AuthzRequest,
-) -> Result<Option<Uuid>, AppError> {
-    if req.object_kind.as_deref() == Some("tenant") {
-        return Ok(req.object_id);
-    }
-
-    if let Some(resource_id) = req.resource_id {
-        return sqlx::query_scalar::<_, Option<Uuid>>(
-            "SELECT tenant_id FROM resources WHERE id = $1",
-        )
-        .bind(resource_id)
-        .fetch_optional(pool)
-        .await
-        .map(|value| value.flatten())
-        .map_err(crate::error::db_err);
-    }
-
-    match (req.object_kind.as_deref(), req.object_id) {
-        (Some("resource"), Some(id)) => {
-            sqlx::query_scalar::<_, Option<Uuid>>("SELECT tenant_id FROM resources WHERE id = $1")
-                .bind(id)
-                .fetch_optional(pool)
-                .await
-                .map(|value| value.flatten())
-                .map_err(crate::error::db_err)
-        }
-        (Some("entity"), Some(id)) => {
-            sqlx::query_scalar::<_, Option<Uuid>>("SELECT tenant_id FROM entities WHERE id = $1")
-                .bind(id)
-                .fetch_optional(pool)
-                .await
-                .map(|value| value.flatten())
-                .map_err(crate::error::db_err)
-        }
-        _ => Ok(None),
-    }
-}
-
 async fn audit_tenant_filter(
     pool: &PgPool,
     auth: &AuthContext,
@@ -189,28 +152,32 @@ pub async fn create_resource(
 
 pub async fn get_resource(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     let resource = repo::get_resource(&state.pool, id).await?;
+    require_read_access(&state.pool, auth.entity_id, resource.tenant_id, id).await?;
     Ok(Json(resource))
 }
 
 pub async fn resource_access(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
     Query(params): Query<ResourceAccessQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    let resource = repo::get_resource(&state.pool, id).await?;
+    require_read_access(&state.pool, auth.entity_id, resource.tenant_id, id).await?;
     let access = repo::resource_access(&state.pool, id, params).await?;
     Ok(Json(access))
 }
 
 pub async fn list_resources(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Query(params): Query<ListResources>,
 ) -> Result<impl IntoResponse, AppError> {
+    require_list_access(&state.pool, auth.entity_id, params.tenant_id).await?;
     let list = repo::list_resources(&state.pool, params).await?;
     Ok(Json(list))
 }
@@ -270,18 +237,20 @@ pub async fn create_role(
 
 pub async fn get_role(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     let role = repo::get_role(&state.pool, id).await?;
+    require_role_read(&state.pool, auth.entity_id, role.tenant_id).await?;
     Ok(Json(role))
 }
 
 pub async fn list_roles(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Query(params): Query<ListRoles>,
 ) -> Result<impl IntoResponse, AppError> {
+    require_role_read(&state.pool, auth.entity_id, params.tenant_id).await?;
     let list = repo::list_roles(&state.pool, params).await?;
     Ok(Json(list))
 }
@@ -340,19 +309,23 @@ pub async fn remove_role_capability(
 
 pub async fn get_role_capabilities(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(role_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    let role = repo::get_role(&state.pool, role_id).await?;
+    require_role_read(&state.pool, auth.entity_id, role.tenant_id).await?;
     let caps = repo::get_role_capabilities(&state.pool, role_id).await?;
     Ok(Json(serde_json::json!({"items": caps})))
 }
 
 pub async fn role_holders(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
     Query(params): Query<RoleHoldersQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    let role = repo::get_role(&state.pool, id).await?;
+    require_role_read(&state.pool, auth.entity_id, role.tenant_id).await?;
     let holders = repo::role_holders(&state.pool, id, params).await?;
     Ok(Json(holders))
 }
@@ -377,18 +350,20 @@ pub async fn create_capability(
 
 pub async fn get_capability(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    require_policy_read(&state.pool, auth.entity_id).await?;
     let cap = repo::get_capability(&state.pool, id).await?;
     Ok(Json(cap))
 }
 
 pub async fn list_capabilities(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Query(params): Query<ListCapabilities>,
 ) -> Result<impl IntoResponse, AppError> {
+    require_policy_read(&state.pool, auth.entity_id).await?;
     let caps = repo::list_capabilities(&state.pool, params).await?;
     Ok(Json(serde_json::json!({"items": caps})))
 }
@@ -431,18 +406,20 @@ pub async fn create_policy(
 
 pub async fn get_policy(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    require_policy_read(&state.pool, auth.entity_id).await?;
     let policy = repo::get_policy(&state.pool, id).await?;
     Ok(Json(policy))
 }
 
 pub async fn list_policies(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Query(params): Query<ListPolicies>,
 ) -> Result<impl IntoResponse, AppError> {
+    require_policy_read(&state.pool, auth.entity_id).await?;
     let list = repo::list_policies(&state.pool, params).await?;
     Ok(Json(list))
 }
@@ -468,13 +445,16 @@ pub async fn delete_policy(
 
 pub async fn check(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Json(req): Json<AuthzRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let tenant_id = authz_request_tenant_id(&state.pool, &req).await?;
+    let tenant_id = super::access::authz_request_tenant_id(&state.pool, &req).await?;
+    super::access::require_authz_check_access(&state.pool, &auth, req.subject_id, tenant_id)
+        .await?;
     let response = engine::evaluate(&state.pool, &req).await?;
 
     let mut details = serde_json::json!({
+        "subject_id": req.subject_id,
         "action": req.action,
         "resource_id": req.resource_id,
         "object_kind": req.object_kind,
@@ -491,7 +471,7 @@ pub async fn check(
 
     audit::write(
         &state.pool,
-        Some(req.subject_id),
+        Some(auth.entity_id),
         tenant_id,
         "authz.check",
         if response.allowed {
@@ -508,13 +488,15 @@ pub async fn check(
 
 pub async fn explain(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Json(req): Json<AuthzRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let tenant_id = authz_request_tenant_id(&state.pool, &req).await?;
+    require_explain_access(&state.pool, auth.entity_id).await?;
+    let tenant_id = super::access::authz_request_tenant_id(&state.pool, &req).await?;
     let response = engine::explain(&state.pool, &req).await?;
 
     let mut details = serde_json::json!({
+        "subject_id": req.subject_id,
         "action": req.action,
         "resource_id": req.resource_id,
         "object_kind": req.object_kind,
@@ -535,7 +517,7 @@ pub async fn explain(
 
     audit::write(
         &state.pool,
-        Some(req.subject_id),
+        Some(auth.entity_id),
         tenant_id,
         "authz.explain",
         if response.allowed {
@@ -552,7 +534,7 @@ pub async fn explain(
 
 pub async fn bulk_check(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Json(req): Json<BulkAuthzRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     if req.actions.is_empty() {
@@ -579,11 +561,19 @@ pub async fn bulk_check(
             object_id: None,
             context: req.context.clone(),
         };
+        let tenant_id = super::access::authz_request_tenant_id(&state.pool, &check_req).await?;
+        super::access::require_authz_check_access(
+            &state.pool,
+            &auth,
+            check_req.subject_id,
+            tenant_id,
+        )
+        .await?;
         let response = engine::evaluate(&state.pool, &check_req).await?;
         audit::write(
             &state.pool,
-            Some(req.subject_id),
-            authz_request_tenant_id(&state.pool, &check_req).await?,
+            Some(auth.entity_id),
+            tenant_id,
             "authz.check",
             if response.allowed {
                 AuditOutcome::Allow
@@ -591,6 +581,7 @@ pub async fn bulk_check(
                 AuditOutcome::Deny
             },
             serde_json::json!({
+                "subject_id": req.subject_id,
                 "action": action,
                 "resource_id": req.resource_id,
                 "reason": response.reason,
@@ -615,30 +606,40 @@ pub async fn bulk_check(
 
 pub async fn entity_access(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
     Query(params): Query<AccessQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    let entity = crate::identity::repo::get_entity(&state.pool, id).await?;
+    if auth.entity_id != id {
+        require_read_access(&state.pool, auth.entity_id, entity.tenant_id, id).await?;
+    }
     let access = repo::entity_access(&state.pool, id, params).await?;
     Ok(Json(access))
 }
 
 pub async fn group_access(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
     Query(params): Query<GroupAccessQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    let group = crate::identity::repo::get_group(&state.pool, id).await?;
+    require_read_access(&state.pool, auth.entity_id, group.tenant_id, id).await?;
     let access = repo::group_access(&state.pool, id, params).await?;
     Ok(Json(access))
 }
 
 pub async fn effective_capabilities(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
     Query(params): Query<EffectiveCapabilitiesQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    let entity = crate::identity::repo::get_entity(&state.pool, id).await?;
+    if auth.entity_id != id {
+        require_read_access(&state.pool, auth.entity_id, entity.tenant_id, id).await?;
+    }
     let caps = repo::effective_capabilities(&state.pool, id, params).await?;
     Ok(Json(caps))
 }

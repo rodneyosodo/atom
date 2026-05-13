@@ -21,6 +21,7 @@ pub struct Config {
     /// Development-only: allow password login before the signup email is verified.
     pub dev_allow_unverified_email_login: bool,
     pub public_base_url: String,
+    pub cors_allowed_origins: Vec<String>,
     pub email_verification_redirect: String,
     pub oauth_success_redirect: String,
     pub oauth_error_redirect: String,
@@ -44,7 +45,7 @@ impl Config {
             database_url: std::env::var("DATABASE_URL").context("DATABASE_URL must be set")?,
             listen_addr: std::env::var("LISTEN_ADDR")
                 .unwrap_or_else(|_| "0.0.0.0:8080".to_string()),
-            grpc_addr: std::env::var("GRPC_ADDR").unwrap_or_else(|_| "0.0.0.0:8081".to_string()),
+            grpc_addr: std::env::var("GRPC_ADDR").unwrap_or_else(|_| "127.0.0.1:8081".to_string()),
             jwt_expiry_secs: std::env::var("JWT_EXPIRY_SECS")
                 .unwrap_or_else(|_| "3600".to_string())
                 .parse()
@@ -56,6 +57,7 @@ impl Config {
             admin_secret: std::env::var("ADMIN_SECRET").ok(),
             signup_enabled: env_bool("ATOM_SIGNUP_ENABLED"),
             dev_allow_unverified_email_login: env_bool("ATOM_DEV_ALLOW_UNVERIFIED_EMAIL_LOGIN"),
+            cors_allowed_origins: parse_cors_allowed_origins(&public_base_url),
             email_verification_redirect: std::env::var("ATOM_EMAIL_VERIFICATION_REDIRECT")
                 .unwrap_or_else(|_| {
                     public_url(&public_base_url, "/graphql/console/auth/verify-email")
@@ -120,6 +122,21 @@ fn env_u64(name: &str, default: u64) -> u64 {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(default)
+}
+
+fn parse_cors_allowed_origins(public_base_url: &str) -> Vec<String> {
+    std::env::var("ATOM_CORS_ALLOWED_ORIGINS")
+        .ok()
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|origin| !origin.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .filter(|origins| !origins.is_empty())
+        .unwrap_or_else(|| vec![public_base_url.trim_end_matches('/').to_string()])
 }
 
 fn parse_oidc_providers() -> Result<Vec<OidcProviderConfig>> {

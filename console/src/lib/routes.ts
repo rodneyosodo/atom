@@ -12,6 +12,7 @@ export const CONSOLE_ROUTES: ConsoleRoute[] = [
   { label: "Endpoints", href: `${CONSOLE_BASE}/endpoints`, section: "Build" },
   { label: "Tenants", href: `${CONSOLE_BASE}/tenants`, section: "Operate" },
   { label: "Entities", href: `${CONSOLE_BASE}/entities`, section: "Operate" },
+  { label: "Groups", href: `${CONSOLE_BASE}/groups`, section: "Operate" },
   { label: "Profiles", href: `${CONSOLE_BASE}/profiles`, section: "Operate" },
   { label: "Resources", href: `${CONSOLE_BASE}/resources`, section: "Secure" },
   { label: "Policies", href: `${CONSOLE_BASE}/policies`, section: "Secure" },

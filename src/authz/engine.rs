@@ -1123,7 +1123,9 @@ mod db_tests {
     async fn pool() -> PgPool {
         let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
         let pool = PgPool::connect(&url).await.expect("connect");
-        sqlx::migrate!("./migrations")
+        sqlx::migrate::Migrator::new(std::path::Path::new("./migrations"))
+            .await
+            .expect("load migrations")
             .run(&pool)
             .await
             .expect("migrate");

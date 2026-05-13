@@ -2,6 +2,11 @@
   "name": "atom-docs",
   "version": "0.1.0",
   "private": true,
+  "pnpm": {
+    "overrides": {
+      "postcss": "^8.5.10"
+    }
+  },
   "scripts": {
     "dev": "next dev --turbopack",
     "build": "next build",
@@ -11,11 +16,12 @@
     "fumadocs-core": "^14",
     "fumadocs-mdx": "^11",
     "fumadocs-ui": "^14",
-    "next": "15",
+    "next": "^15.5.18",
     "react": "^19",
     "react-dom": "^19"
   },
   "devDependencies": {
+    "@types/mdx": "^2.0.13",
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",

@@ -5,7 +5,7 @@ description: Detect orphaned policies, unprotected resources, and expiring crede
 
 Administrative endpoints for surfacing system health issues. All three require `RequireManage` — the caller must hold the `manage` capability with `scope_kind = all`.
 
-## GET /admin/orphan-policies {#orphan-policies}
+## GET /admin/orphan-policies
 
 Returns policy bindings where the referenced subject (entity or group) or grant (capability or role) no longer exists.
 
@@ -48,7 +48,7 @@ Returns policy bindings where the referenced subject (entity or group) or grant 
 
 ---
 
-## GET /admin/unprotected-resources {#unprotected-resources}
+## GET /admin/unprotected-resources
 
 Returns resources that have **no policy bindings** covering them — not directly, not by kind, and not by a global `scope_kind = all` binding.
 
@@ -85,7 +85,7 @@ If any `scope_kind = all` policy binding exists in the system, every resource is
 
 ---
 
-## GET /admin/expiring-credentials {#expiring-credentials}
+## GET /admin/expiring-credentials
 
 Returns active credentials expiring within a specified number of days. Useful for proactive rotation before integrations break.
 

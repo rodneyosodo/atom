@@ -28,6 +28,7 @@ fn config(dev_allow_unverified_email_login: bool) -> Config {
         signup_enabled: true,
         dev_allow_unverified_email_login,
         public_base_url: "http://localhost:8080".into(),
+        cors_allowed_origins: vec!["http://localhost:8080".into()],
         email_verification_redirect: "http://localhost:8080/graphql/console/auth/verify-email"
             .into(),
         oauth_success_redirect: "http://localhost:8080".into(),
@@ -59,7 +60,7 @@ async fn signup_creates_global_unverified_human_password_email_and_dev_login() {
         SignupRequest {
             name: name.clone(),
             email: email.clone(),
-            password: "secret".into(),
+            password: "test-password-123".into(),
             attributes: json!({"source": "m16"}),
         },
     )
@@ -120,13 +121,25 @@ async fn signup_creates_global_unverified_human_password_email_and_dev_login() {
             .expect("membership count");
     assert_eq!(membership_count, 0);
 
-    let strict_login =
-        service::login_password(&pool, &config(false), &keys.primary, &email, "secret").await;
+    let strict_login = service::login_password(
+        &pool,
+        &config(false),
+        &keys.primary,
+        &email,
+        "test-password-123",
+    )
+    .await;
     assert!(strict_login.is_err());
 
-    let login = service::login_password(&pool, &config(true), &keys.primary, &email, "secret")
-        .await
-        .expect("dev login");
+    let login = service::login_password(
+        &pool,
+        &config(true),
+        &keys.primary,
+        &email,
+        "test-password-123",
+    )
+    .await
+    .expect("dev login");
     assert_eq!(login.entity_id, response.entity_id);
     assert_eq!(login.email_verified, Some(false));
     assert!(login.verification_required);
@@ -136,7 +149,13 @@ async fn signup_creates_global_unverified_human_password_email_and_dev_login() {
         .execute(&pool)
         .await
         .expect("suspend entity");
-    let suspended_login =
-        service::login_password(&pool, &config(true), &keys.primary, &email, "secret").await;
+    let suspended_login = service::login_password(
+        &pool,
+        &config(true),
+        &keys.primary,
+        &email,
+        "test-password-123",
+    )
+    .await;
     assert!(suspended_login.is_err());
 }

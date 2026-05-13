@@ -17,7 +17,9 @@ pub async fn pool() -> PgPool {
     let pool = PgPool::connect(&url)
         .await
         .expect("connect to test database");
-    sqlx::migrate!("./migrations")
+    sqlx::migrate::Migrator::new(std::path::Path::new("./migrations"))
+        .await
+        .expect("load migrations")
         .run(&pool)
         .await
         .expect("apply migrations");

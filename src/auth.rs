@@ -14,7 +14,7 @@ use uuid::Uuid;
 use crate::{
     error::{db_err, AppError},
     keys::{ActiveKeys, LoadedKey},
-    models::enums::{CredentialKind, CredentialStatus},
+    models::enums::{CredentialKind, CredentialStatus, EntityStatus, TenantStatus},
     state::AppState,
 };
 
@@ -150,14 +150,25 @@ async fn auth_from_jwt(state: &AppState, token: &str) -> Result<AuthContext, App
         .map_err(|_| AppError::unauthorized("invalid tenant id in token"))?;
 
     use sqlx::Row;
-    let row = sqlx::query("SELECT revoked_at, expires_at FROM sessions WHERE id = $1")
-        .bind(session_id)
-        .fetch_one(&state.pool)
-        .await
-        .map_err(|e| match e {
-            sqlx::Error::RowNotFound => AppError::unauthorized("session not found"),
-            other => AppError::Database(other),
-        })?;
+    let row = sqlx::query(
+        r#"SELECT s.revoked_at,
+                  s.expires_at,
+                  e.tenant_id,
+                  e.status AS entity_status,
+                  t.status AS tenant_status
+           FROM sessions s
+           JOIN entities e ON e.id = s.entity_id
+           LEFT JOIN tenants t ON t.id = e.tenant_id
+           WHERE s.id = $1 AND s.entity_id = $2"#,
+    )
+    .bind(session_id)
+    .bind(entity_id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| match e {
+        sqlx::Error::RowNotFound => AppError::unauthorized("session not found"),
+        other => AppError::Database(other),
+    })?;
 
     let revoked_at: Option<chrono::DateTime<Utc>> = row.try_get("revoked_at").unwrap_or(None);
     let expires_at: chrono::DateTime<Utc> = row
@@ -171,9 +182,29 @@ async fn auth_from_jwt(state: &AppState, token: &str) -> Result<AuthContext, App
         return Err(AppError::unauthorized("session expired"));
     }
 
+    let entity_status: EntityStatus = row
+        .try_get("entity_status")
+        .map_err(|_| AppError::unauthorized("corrupt entity"))?;
+    if entity_status != EntityStatus::Active {
+        return Err(AppError::unauthorized("entity is not active"));
+    }
+
+    let entity_tenant_id: Option<Uuid> = row.try_get("tenant_id").unwrap_or(None);
+    if tenant_id != entity_tenant_id {
+        return Err(AppError::unauthorized("token tenant does not match entity"));
+    }
+    if let Some(tenant_status) = row
+        .try_get::<Option<TenantStatus>, _>("tenant_status")
+        .unwrap_or(None)
+    {
+        if tenant_status != TenantStatus::Active {
+            return Err(AppError::unauthorized("tenant is not active"));
+        }
+    }
+
     Ok(AuthContext {
         entity_id,
-        tenant_id,
+        tenant_id: entity_tenant_id,
         session_id: Some(session_id),
     })
 }
@@ -185,7 +216,17 @@ async fn auth_from_api_key(state: &AppState, key: &str) -> Result<AuthContext, A
     use sqlx::Row;
 
     let row = sqlx::query(
-        "SELECT entity_id, secret_hash, status, expires_at FROM credentials WHERE id = $1 AND kind = $2",
+        r#"SELECT c.entity_id,
+                  c.secret_hash,
+                  c.status,
+                  c.expires_at,
+                  e.tenant_id,
+                  e.status AS entity_status,
+                  t.status AS tenant_status
+           FROM credentials c
+           JOIN entities e ON e.id = c.entity_id
+           LEFT JOIN tenants t ON t.id = e.tenant_id
+           WHERE c.id = $1 AND c.kind = $2"#,
     )
     .bind(cred_id)
     .bind(CredentialKind::ApiKey)
@@ -208,6 +249,21 @@ async fn auth_from_api_key(state: &AppState, key: &str) -> Result<AuthContext, A
         }
     }
 
+    let entity_status: EntityStatus = row
+        .try_get("entity_status")
+        .map_err(|_| AppError::unauthorized("corrupt entity"))?;
+    if entity_status != EntityStatus::Active {
+        return Err(AppError::unauthorized("entity is not active"));
+    }
+    if let Some(tenant_status) = row
+        .try_get::<Option<TenantStatus>, _>("tenant_status")
+        .unwrap_or(None)
+    {
+        if tenant_status != TenantStatus::Active {
+            return Err(AppError::unauthorized("tenant is not active"));
+        }
+    }
+
     let hash: Option<String> = row.try_get("secret_hash").unwrap_or(None);
     let hash = hash.ok_or_else(|| AppError::unauthorized("invalid credential"))?;
 
@@ -223,15 +279,7 @@ async fn auth_from_api_key(state: &AppState, key: &str) -> Result<AuthContext, A
 
     let entity_id: Uuid = row.try_get("entity_id").map_err(db_err)?;
 
-    let tenant_id = sqlx::query("SELECT tenant_id FROM entities WHERE id = $1")
-        .bind(entity_id)
-        .fetch_one(&state.pool)
-        .await
-        .map_err(db_err)
-        .and_then(|r: sqlx::postgres::PgRow| {
-            use sqlx::Row;
-            r.try_get::<Option<Uuid>, _>("tenant_id").map_err(db_err)
-        })?;
+    let tenant_id: Option<Uuid> = row.try_get("tenant_id").unwrap_or(None);
 
     Ok(AuthContext {
         entity_id,
@@ -281,7 +329,15 @@ pub async fn has_capability_in_scope(
     let (scope_clause, scope_ref): (&str, Option<String>) = match scope {
         Scope::Platform => ("pb.scope_kind = 'platform'", None),
         Scope::Tenant(t) => (
-            "(pb.scope_kind = 'platform' OR (pb.scope_kind = 'tenant' AND pb.scope_ref = $3))",
+            r#"(pb.scope_kind = 'platform'
+               OR (
+                   pb.scope_kind = 'tenant'
+                   AND pb.scope_ref = $3
+                   AND EXISTS (
+                       SELECT 1 FROM tenants tenant
+                       WHERE tenant.id = $3::uuid AND tenant.status = 'active'
+                   )
+               ))"#,
             Some(t.to_string()),
         ),
         Scope::Object(id) => (
@@ -294,22 +350,25 @@ pub async fn has_capability_in_scope(
         r#"SELECT EXISTS (
             SELECT 1
             FROM policy_bindings pb
+            JOIN entities actor ON actor.id = $1 AND actor.status = 'active'
+            LEFT JOIN tenants actor_tenant ON actor_tenant.id = actor.tenant_id
             WHERE (
                 (pb.subject_kind = 'entity' AND pb.subject_id = $1)
                 OR (pb.subject_kind = 'group' AND pb.subject_id IN (
                     SELECT group_id FROM group_members WHERE entity_id = $1
                 ))
             )
+            AND (actor.tenant_id IS NULL OR actor_tenant.status = 'active')
             AND pb.effect = 'allow'
             AND {scope_clause}
             AND (
                 (pb.grant_kind = 'capability' AND pb.grant_id IN (
-                    SELECT id FROM capabilities WHERE name = $2
+                    SELECT id FROM capabilities WHERE name = $2 AND resource_kind IS NULL
                 ))
                 OR (pb.grant_kind = 'role' AND pb.grant_id IN (
                     SELECT rc.role_id FROM role_capabilities rc
                     JOIN capabilities c ON c.id = rc.capability_id
-                    WHERE c.name = $2
+                    WHERE c.name = $2 AND c.resource_kind IS NULL
                 ))
             )
         )"#
@@ -331,6 +390,100 @@ pub async fn has_capability_at_scope(
     scope: Scope,
 ) -> Result<bool, AppError> {
     has_capability_in_scope(pool, entity_id, capability_name, scope).await
+}
+
+pub async fn require_any_capability(
+    pool: &PgPool,
+    entity_id: Uuid,
+    checks: &[(&str, Scope)],
+) -> Result<(), AppError> {
+    for (capability_name, scope) in checks {
+        if has_capability_in_scope(pool, entity_id, capability_name, *scope).await? {
+            return Ok(());
+        }
+    }
+    Err(AppError::Forbidden)
+}
+
+pub fn scope_for_tenant(tenant_id: Option<Uuid>) -> Scope {
+    match tenant_id {
+        Some(tenant_id) => Scope::Tenant(tenant_id),
+        None => Scope::Platform,
+    }
+}
+
+pub async fn require_list_access(
+    pool: &PgPool,
+    entity_id: Uuid,
+    tenant_id: Option<Uuid>,
+) -> Result<(), AppError> {
+    let scope = scope_for_tenant(tenant_id);
+    require_any_capability(
+        pool,
+        entity_id,
+        &[("list", scope), ("read", scope), ("manage", scope)],
+    )
+    .await
+}
+
+pub async fn require_read_access(
+    pool: &PgPool,
+    entity_id: Uuid,
+    tenant_id: Option<Uuid>,
+    object_id: Uuid,
+) -> Result<(), AppError> {
+    let tenant_scope = scope_for_tenant(tenant_id);
+    require_any_capability(
+        pool,
+        entity_id,
+        &[
+            ("read", Scope::Object(object_id)),
+            ("manage", Scope::Object(object_id)),
+            ("read", tenant_scope),
+            ("manage", tenant_scope),
+        ],
+    )
+    .await
+}
+
+pub async fn require_role_read(
+    pool: &PgPool,
+    entity_id: Uuid,
+    tenant_id: Option<Uuid>,
+) -> Result<(), AppError> {
+    let scope = scope_for_tenant(tenant_id);
+    require_any_capability(
+        pool,
+        entity_id,
+        &[("role.manage", scope), ("read", scope), ("list", scope)],
+    )
+    .await
+}
+
+pub async fn require_policy_read(pool: &PgPool, entity_id: Uuid) -> Result<(), AppError> {
+    require_any_capability(
+        pool,
+        entity_id,
+        &[
+            ("policy.manage", Scope::Platform),
+            ("read", Scope::Platform),
+            ("list", Scope::Platform),
+            ("manage", Scope::Platform),
+        ],
+    )
+    .await
+}
+
+pub async fn require_explain_access(pool: &PgPool, entity_id: Uuid) -> Result<(), AppError> {
+    require_any_capability(
+        pool,
+        entity_id,
+        &[
+            ("policy.manage", Scope::Platform),
+            ("manage", Scope::Platform),
+        ],
+    )
+    .await
 }
 
 /// Convenience for the common platform-`manage` check used by the existing

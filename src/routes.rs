@@ -1,13 +1,13 @@
 use std::path::Path;
 
 use axum::{
-    http::StatusCode,
+    http::{header, HeaderValue, Method, StatusCode},
     response::IntoResponse,
     routing::{any, delete, get, get_service, post},
     Extension, Router,
 };
 use tower_http::{
-    cors::{Any, CorsLayer},
+    cors::{AllowOrigin, CorsLayer},
     services::{ServeDir, ServeFile},
     trace::TraceLayer,
 };
@@ -19,10 +19,26 @@ use crate::{
 
 pub fn create_router(state: AppState) -> Router {
     let graphql_schema = graphql::build_schema(state.clone());
+    let cors_origins = state
+        .config
+        .cors_allowed_origins
+        .iter()
+        .map(|origin| {
+            HeaderValue::from_str(origin)
+                .expect("ATOM_CORS_ALLOWED_ORIGINS contains an invalid origin")
+        })
+        .collect::<Vec<_>>();
     let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_origin(AllowOrigin::list(cors_origins))
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT]);
 
     let app = Router::new()
         // JWKS — unauthenticated, consumed by external verifiers
@@ -373,7 +389,7 @@ mod tests {
                     .uri("/auth/signup")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"name":"alice","email":"alice@example.test","password":"secret"}"#,
+                        r#"{"name":"alice","email":"alice@example.test","password":"test-password-123"}"#,
                     ))
                     .expect("request"),
             )
@@ -437,6 +453,7 @@ mod tests {
             signup_enabled: false,
             dev_allow_unverified_email_login: false,
             public_base_url: "http://localhost:8080".into(),
+            cors_allowed_origins: vec!["http://localhost:8080".into()],
             email_verification_redirect: "http://localhost:8080/graphql/console/auth/verify-email"
                 .into(),
             oauth_success_redirect: "http://localhost:8080".into(),

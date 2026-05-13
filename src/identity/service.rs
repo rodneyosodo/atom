@@ -25,7 +25,9 @@ use crate::{
     error::{db_err, AppError},
     keys::LoadedKey,
     models::{
-        enums::{AuditOutcome, CredentialKind, CredentialStatus, EntityKind, EntityStatus},
+        enums::{
+            AuditOutcome, CredentialKind, CredentialStatus, EntityKind, EntityStatus, TenantStatus,
+        },
         session::{LoginResponse, SignupRequest, SignupResponse},
         token::{ApiKeyResponse, CreateApiKey},
     },
@@ -44,6 +46,22 @@ pub fn verify_secret(secret: &[u8], hash: &str) -> bool {
         .ok()
         .map(|h| Argon2::default().verify_password(secret, &h).is_ok())
         .unwrap_or(false)
+}
+
+const MIN_PASSWORD_CHARS: usize = 12;
+const LOGIN_FAILURE_LIMIT: i64 = 5;
+const LOGIN_FAILURE_WINDOW_SECS: i64 = 15 * 60;
+
+pub fn validate_password_strength(password: &str) -> Result<(), AppError> {
+    if password.chars().count() < MIN_PASSWORD_CHARS {
+        return Err(AppError::bad_request(format!(
+            "password must be at least {MIN_PASSWORD_CHARS} characters"
+        )));
+    }
+    if password.chars().all(char::is_whitespace) {
+        return Err(AppError::bad_request("password cannot be blank"));
+    }
+    Ok(())
 }
 
 pub async fn login_password(
@@ -113,34 +131,97 @@ async fn do_login_password(
     tenant_route: Option<&str>,
 ) -> Result<LoginResponse, AppError> {
     let login_tenant_id = resolve_login_tenant(pool, requested_tenant_id, tenant_route).await?;
-    let identity = resolve_login_identity(pool, identifier, login_tenant_id).await?;
-
-    if identity.status != EntityStatus::Active {
-        return Err(AppError::unauthorized("entity is not active"));
+    let attempt_identifier = login_attempt_identifier(identifier);
+    if let Err(err) = ensure_login_not_throttled(pool, &attempt_identifier, login_tenant_id).await {
+        record_login_attempt(pool, &attempt_identifier, login_tenant_id, false).await;
+        return Err(err);
     }
 
-    let hash = password_hash_for_login(
-        pool,
-        identity.entity_id,
-        identity.credential_identifier.as_deref(),
+    let result = async {
+        let identity = resolve_login_identity(pool, identifier, login_tenant_id).await?;
+
+        if identity.status != EntityStatus::Active {
+            return Err(AppError::unauthorized("entity is not active"));
+        }
+
+        let hash = password_hash_for_login(
+            pool,
+            identity.entity_id,
+            identity.credential_identifier.as_deref(),
+        )
+        .await?;
+        if !verify_secret(secret.as_bytes(), &hash) {
+            return Err(AppError::unauthorized("invalid credentials"));
+        }
+
+        if identity.email_verified == Some(false) && !cfg.dev_allow_unverified_email_login {
+            return Err(AppError::unauthorized("email verification required"));
+        }
+
+        create_login_response(
+            pool,
+            cfg,
+            primary_key,
+            identity.entity_id,
+            identity.email_verified,
+        )
+        .await
+    }
+    .await;
+
+    record_login_attempt(pool, &attempt_identifier, login_tenant_id, result.is_ok()).await;
+    result
+}
+
+fn login_attempt_identifier(identifier: &str) -> String {
+    normalize_email_lossy(identifier)
+}
+
+async fn ensure_login_not_throttled(
+    pool: &PgPool,
+    identifier: &str,
+    tenant_id: Option<Uuid>,
+) -> Result<(), AppError> {
+    let failures: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*)
+           FROM auth_login_attempts
+           WHERE identifier = $1
+             AND (($2::uuid IS NULL AND tenant_id IS NULL) OR tenant_id = $2)
+             AND success = FALSE
+             AND created_at >= now() - ($3::text || ' seconds')::interval"#,
     )
-    .await?;
-    if !verify_secret(secret.as_bytes(), &hash) {
-        return Err(AppError::unauthorized("invalid credentials"));
-    }
-
-    if identity.email_verified == Some(false) && !cfg.dev_allow_unverified_email_login {
-        return Err(AppError::unauthorized("email verification required"));
-    }
-
-    create_login_response(
-        pool,
-        cfg,
-        primary_key,
-        identity.entity_id,
-        identity.email_verified,
-    )
+    .bind(identifier)
+    .bind(tenant_id)
+    .bind(LOGIN_FAILURE_WINDOW_SECS.to_string())
+    .fetch_one(pool)
     .await
+    .map_err(db_err)?;
+
+    if failures >= LOGIN_FAILURE_LIMIT {
+        Err(AppError::unauthorized("too many failed login attempts"))
+    } else {
+        Ok(())
+    }
+}
+
+async fn record_login_attempt(
+    pool: &PgPool,
+    identifier: &str,
+    tenant_id: Option<Uuid>,
+    success: bool,
+) {
+    if let Err(err) = sqlx::query(
+        r#"INSERT INTO auth_login_attempts (identifier, tenant_id, success)
+           VALUES ($1, $2, $3)"#,
+    )
+    .bind(identifier)
+    .bind(tenant_id)
+    .bind(success)
+    .execute(pool)
+    .await
+    {
+        tracing::warn!("login attempt record failed: {err}");
+    }
 }
 
 pub async fn signup_human(
@@ -185,6 +266,7 @@ async fn do_signup_human(
     if req.password.is_empty() {
         return Err(AppError::bad_request("password is required"));
     }
+    validate_password_strength(&req.password)?;
     let email = normalize_email(&req.email)?;
     let attributes = normalize_json_object(req.attributes);
     let password_hash = hash_secret(req.password.as_bytes())?;
@@ -517,15 +599,28 @@ async fn create_login_response(
     email_verified: Option<bool>,
 ) -> Result<LoginResponse, AppError> {
     use sqlx::Row;
-    let row = sqlx::query("SELECT tenant_id, status FROM entities WHERE id = $1")
-        .bind(entity_id)
-        .fetch_one(pool)
-        .await
-        .map_err(db_err)?;
+    let row = sqlx::query(
+        r#"SELECT e.tenant_id, e.status, t.status AS tenant_status
+           FROM entities e
+           LEFT JOIN tenants t ON t.id = e.tenant_id
+           WHERE e.id = $1"#,
+    )
+    .bind(entity_id)
+    .fetch_one(pool)
+    .await
+    .map_err(db_err)?;
     let tenant_id: Option<Uuid> = row.try_get("tenant_id").unwrap_or(None);
     let status: EntityStatus = row.try_get("status").map_err(db_err)?;
     if status != EntityStatus::Active {
         return Err(AppError::unauthorized("entity is not active"));
+    }
+    if let Some(tenant_status) = row
+        .try_get::<Option<TenantStatus>, _>("tenant_status")
+        .unwrap_or(None)
+    {
+        if tenant_status != TenantStatus::Active {
+            return Err(AppError::unauthorized("tenant is not active"));
+        }
     }
 
     let session = super::repo::create_session(pool, entity_id, cfg.jwt_expiry_secs).await?;
@@ -614,7 +709,7 @@ async fn password_hash_for_login(
            WHERE entity_id = $1
              AND kind = $2
              AND status = $3
-             AND ($4::text IS NULL OR identifier = $4)
+             AND (($4::text IS NULL AND identifier IS NULL) OR identifier = $4)
            ORDER BY created_at DESC
            LIMIT 1"#,
     )
@@ -1151,6 +1246,7 @@ pub async fn create_password(
     entity_id: Uuid,
     password: &str,
 ) -> Result<(), AppError> {
+    validate_password_strength(password)?;
     let hash = hash_secret(password.as_bytes())?;
     let id = Uuid::new_v4();
 
