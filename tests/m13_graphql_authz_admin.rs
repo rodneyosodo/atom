@@ -234,6 +234,34 @@ async fn unauthorized_read_query_fails_and_admin_read_succeeds() {
 
 #[tokio::test]
 #[ignore]
+async fn entity_query_allows_self_read_without_policy() {
+    let pool = common::pool().await;
+    let entity_id = entity(&pool, "human").await;
+    let schema = build_schema(state(pool));
+
+    let response = schema
+        .execute(authed_as(
+            entity_id,
+            format!(
+                r#"
+                {{
+                  entity(id: "{entity_id}") {{
+                    id
+                    name
+                  }}
+                }}
+                "#
+            ),
+        ))
+        .await;
+
+    assert!(response.errors.is_empty(), "{:?}", response.errors);
+    let entity = &response.data.into_json().expect("json data")["entity"];
+    assert_eq!(entity["id"], entity_id.to_string());
+}
+
+#[tokio::test]
+#[ignore]
 async fn create_role_and_attach_capability() {
     let pool = common::pool().await;
     let publish_id = seeded_capability(&pool, "publish").await;

@@ -43,7 +43,9 @@ impl EntityQuery {
         let state = ctx.data::<AppState>()?;
         let id = parse_id(id, "id")?;
         let entity = repo::get_entity(&state.pool, id).await.map_err(gql_error)?;
-        require_read_access(&state.pool, auth.entity_id, entity.tenant_id, id).await?;
+        if auth.entity_id != id {
+            require_read_access(&state.pool, auth.entity_id, entity.tenant_id, id).await?;
+        }
         Ok(entity.into())
     }
 
