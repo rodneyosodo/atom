@@ -2,8 +2,9 @@ use async_graphql::{Context, Object, Result, ID};
 
 use crate::{
     auth::Scope,
+    authz::engine,
     identity::repo,
-    models::{entity as entity_model, entity::ListEntities},
+    models::{entity as entity_model, entity::ListEntities, policy::AuthzRequest},
     state::AppState,
 };
 
@@ -43,7 +44,22 @@ impl EntityQuery {
         let state = ctx.data::<AppState>()?;
         let id = parse_id(id, "id")?;
         let entity = repo::get_entity(&state.pool, id).await.map_err(gql_error)?;
-        if auth.entity_id != id {
+        let allowed = auth.entity_id == id
+            || engine::evaluate(
+                &state.pool,
+                &AuthzRequest {
+                    subject_id: auth.entity_id,
+                    action: "read".to_string(),
+                    resource_id: None,
+                    object_kind: Some("entity".to_string()),
+                    object_id: Some(id),
+                    context: serde_json::Value::Null,
+                },
+            )
+            .await
+            .map_err(gql_error)?
+            .allowed;
+        if !allowed {
             require_read_access(&state.pool, auth.entity_id, entity.tenant_id, id).await?;
         }
         Ok(entity.into())
@@ -57,6 +73,8 @@ impl EntityQuery {
         kind: Option<GqlEntityKind>,
         profile_id: Option<ID>,
         tenant_id: Option<ID>,
+        parent_group_id: Option<ID>,
+        include_descendants: Option<bool>,
         status: Option<GqlEntityStatus>,
         limit: Option<i32>,
         offset: Option<i32>,
@@ -64,7 +82,10 @@ impl EntityQuery {
         let auth = require_auth(ctx)?;
         let state = ctx.data::<AppState>()?;
         let tenant_id = parse_optional_id(tenant_id, "tenantId")?;
-        require_list_access(&state.pool, auth.entity_id, tenant_id).await?;
+        let parent_group_id = parse_optional_id(parent_group_id, "parentGroupId")?;
+        if parent_group_id.is_none() {
+            require_list_access(&state.pool, auth.entity_id, tenant_id).await?;
+        }
         let list = repo::list_entities(
             &state.pool,
             ListEntities {
@@ -73,12 +94,41 @@ impl EntityQuery {
                 profile_id: parse_optional_id(profile_id, "profileId")?,
                 tenant_id,
                 status: parse_optional_entity_status(status),
+                parent_group_id,
+                include_descendants: include_descendants.unwrap_or(false),
                 limit: limit.map(i64::from).unwrap_or(20),
                 offset: offset.map(i64::from).unwrap_or(0),
             },
         )
         .await
         .map_err(gql_error)?;
+        if parent_group_id.is_some() {
+            let mut authorized = Vec::new();
+            for item in list.items {
+                let allowed = engine::evaluate(
+                    &state.pool,
+                    &AuthzRequest {
+                        subject_id: auth.entity_id,
+                        action: "read".to_string(),
+                        resource_id: None,
+                        object_kind: Some("entity".to_string()),
+                        object_id: Some(item.id),
+                        context: serde_json::Value::Null,
+                    },
+                )
+                .await
+                .map_err(gql_error)?
+                .allowed;
+                if allowed {
+                    authorized.push(Entity::from(item));
+                }
+            }
+            let total = authorized.len() as i64;
+            return Ok(EntityList {
+                items: authorized,
+                total,
+            });
+        }
 
         Ok(EntityList {
             items: list.items.into_iter().map(Entity::from).collect(),
@@ -192,6 +242,84 @@ impl EntityMutation {
             .await
             .map_err(gql_error)?;
         Ok(true)
+    }
+
+    async fn set_entity_parent_group(
+        &self,
+        ctx: &Context<'_>,
+        entity_id: ID,
+        group_id: ID,
+    ) -> Result<Entity> {
+        let auth = require_auth(ctx)?;
+        let state = ctx.data::<AppState>()?;
+        let entity_id = parse_id(entity_id, "entityId")?;
+        let group_id = parse_id(group_id, "groupId")?;
+        let entity = repo::get_entity(&state.pool, entity_id)
+            .await
+            .map_err(gql_error)?;
+        let group = repo::get_group(&state.pool, group_id)
+            .await
+            .map_err(gql_error)?;
+        require_any_capability(
+            &state.pool,
+            auth.entity_id,
+            &[
+                ("manage", Scope::Object(entity_id)),
+                ("write", Scope::Object(entity_id)),
+                ("write", Scope::Object(group_id)),
+                ("manage", scope_for_tenant(entity.tenant_id)),
+                ("write", scope_for_tenant(entity.tenant_id)),
+                ("manage", scope_for_tenant(group.tenant_id)),
+                ("write", scope_for_tenant(group.tenant_id)),
+            ],
+        )
+        .await?;
+        repo::set_entity_parent_group(&state.pool, entity_id, group_id)
+            .await
+            .map(Entity::from)
+            .map_err(gql_error)
+    }
+
+    async fn add_entity_to_object_group(
+        &self,
+        ctx: &Context<'_>,
+        entity_id: ID,
+        object_group_id: ID,
+    ) -> Result<Entity> {
+        self.set_entity_parent_group(ctx, entity_id, object_group_id)
+            .await
+    }
+
+    async fn clear_entity_parent_group(&self, ctx: &Context<'_>, entity_id: ID) -> Result<Entity> {
+        let auth = require_auth(ctx)?;
+        let state = ctx.data::<AppState>()?;
+        let entity_id = parse_id(entity_id, "entityId")?;
+        let entity = repo::get_entity(&state.pool, entity_id)
+            .await
+            .map_err(gql_error)?;
+        require_any_capability(
+            &state.pool,
+            auth.entity_id,
+            &[
+                ("manage", Scope::Object(entity_id)),
+                ("write", Scope::Object(entity_id)),
+                ("manage", scope_for_tenant(entity.tenant_id)),
+                ("write", scope_for_tenant(entity.tenant_id)),
+            ],
+        )
+        .await?;
+        repo::clear_entity_parent_group(&state.pool, entity_id)
+            .await
+            .map(Entity::from)
+            .map_err(gql_error)
+    }
+
+    async fn remove_entity_from_object_group(
+        &self,
+        ctx: &Context<'_>,
+        entity_id: ID,
+    ) -> Result<Entity> {
+        self.clear_entity_parent_group(ctx, entity_id).await
     }
 
     async fn enable_entity(&self, ctx: &Context<'_>, id: ID) -> Result<Entity> {

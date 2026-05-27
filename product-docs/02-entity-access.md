@@ -1,5 +1,7 @@
 # GET /entities/:id/access
 
+> Legacy draft note: this document still uses the old policy/scope terminology. The authoritative product model is now [Atom access model](./11-access-model-simplification.md). Update this endpoint contract before implementation so it expands role permission blocks and assignments instead of policy scopes.
+
 ## Priority: 1 (Must-have)
 
 ---

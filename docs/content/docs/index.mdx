@@ -20,9 +20,11 @@ Built for [Magistrala](https://github.com/absmach/magistrala), but generic enoug
 
 ## GraphQL
 
-Atom exposes GraphQL at `POST /graphql`. GraphQL uses the same Bearer token authentication as REST. The schema covers health, login/logout/session lookup, tenants, profiles, profile versions, entities, resources, groups, credentials, ownerships, roles, capabilities, policies, authz checks, audit logs, and profile-driven entity creation. REST remains available and unchanged.
+Atom exposes GraphQL at `POST /graphql`. GraphQL uses the same Bearer token authentication as REST. The schema covers health, login/logout/session lookup, tenants, profiles, profile versions, entities, resources, groups, credentials, ownerships, roles, capabilities, policies, authz checks, audit logs, and profile-driven entity creation. REST remains available for Auth/OIDC and custom endpoint execution.
 
-The UI platform contains the GraphQL playground and API Builder. It uses GraphQL introspection and Atom GraphQL operations only, does not inspect raw database tables, and does not provide Magistrala-specific mutations or aliases.
+The Atom Next UI is a separate optional frontend. In Docker Compose it is enabled with the `atom-ui` profile and uses Atom GraphQL through `ATOM_GRAPHQL_URL`.
+
+The Atom Next UI contains the GraphQL playground and API Builder. It uses GraphQL introspection and Atom GraphQL operations only, does not inspect raw database tables, and does not provide Magistrala-specific mutations or aliases.
 
 Atom GraphQL is generic. No Magistrala-specific GraphQL aliases exist; use the generic application mappings below.
 

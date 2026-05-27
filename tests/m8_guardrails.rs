@@ -122,6 +122,7 @@ async fn group_membership_rejects_new_device_that_would_inherit_denied_policy() 
             id: None,
             name: format!("m8-group-{}", Uuid::new_v4()),
             tenant_id: None,
+            group_type: Some("principal".to_string()),
             description: None,
             attributes: json!({}),
         },

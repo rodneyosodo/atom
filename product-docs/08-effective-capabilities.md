@@ -1,5 +1,7 @@
 # GET /entities/:id/effective-capabilities
 
+> Legacy draft note: this document still uses the old policy/scope terminology. The authoritative product model is now [Atom access model](./11-access-model-simplification.md). Update this endpoint contract before implementation so effective actions are resolved from role permission blocks, assignments, and optional advanced conditions.
+
 ## Priority: 2 (Should-have)
 
 ---

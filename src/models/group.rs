@@ -10,6 +10,7 @@ pub struct Group {
     pub id: Uuid,
     pub name: String,
     pub tenant_id: Option<Uuid>,
+    pub group_type: String,
     pub description: Option<String>,
     pub parent_id: Option<Uuid>,
     pub status: EntityStatus,
@@ -23,6 +24,7 @@ pub struct CreateGroup {
     pub id: Option<Uuid>,
     pub name: String,
     pub tenant_id: Option<Uuid>,
+    pub group_type: Option<String>,
     pub description: Option<String>,
     #[serde(default)]
     pub attributes: Value,
@@ -40,6 +42,7 @@ pub struct UpdateGroup {
 pub struct ListGroups {
     pub q: Option<String>,
     pub tenant_id: Option<Uuid>,
+    pub group_type: Option<String>,
     pub parent_id: Option<Uuid>,
     pub status: Option<EntityStatus>,
     #[serde(default = "default_limit")]

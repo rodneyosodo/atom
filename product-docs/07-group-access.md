@@ -1,4 +1,4 @@
-# GET /groups/:id/access
+# Principal Group Access Query
 
 ## Priority: 2 (Should-have)
 
@@ -6,157 +6,105 @@
 
 ## Problem
 
-Groups are a core building block — adding an entity to a group instantly grants it all the group's policy bindings. But there is no way to preview **what access a group grants** before adding a member.
+Principal Groups are used to give the same roles to many identities. Before adding a user, service, application, workload, or device to a Principal Group, an administrator needs to know what access the new member will inherit.
 
-An administrator about to run `POST /groups/:id/members { entity_id }` has no way to answer: "What will this entity gain by joining this group?"
+This query answers:
+
+```text
+What access does this Principal Group grant through its role assignments?
+```
+
+Object Groups are not queried here. Object Groups are boundaries used inside role permission blocks.
 
 ---
 
-## Endpoint
+## Query
 
-```
-GET /groups/:id/access
+The exact GraphQL field name is implementation-defined, but the product behavior is:
+
+```text
+principalGroupAccess(principalGroupId, tenantId, action, objectType, limit, offset)
 ```
 
-**Authentication:** Bearer token required.
+Equivalent REST-style naming, if exposed internally, should use Principal Group language rather than overloaded `groups`.
 
 ---
 
-## Path parameters
+## Parameters
 
 | Parameter | Type | Description |
 |---|---|---|
-| `id` | UUID | Group ID |
+| `principalGroupId` | UUID | Principal Group ID |
+| `tenantId` | UUID | Tenant/domain filter |
+| `action` | string | Optional capability/action filter |
+| `objectType` | string | Optional object type filter such as `entity:device` or `resource:channel` |
+| `limit` | int | Results per page |
+| `offset` | int | Pagination offset |
 
 ---
 
-## Query parameters
-
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `resource_kind` | string | — | Filter by resource kind |
-| `action` | string | — | Filter by action/capability name |
-| `effect` | `allow` \| `deny` | — | Filter by effect |
-| `limit` | int | 20 | Results per page (1-100) |
-| `offset` | int | 0 | Pagination offset |
-
----
-
-## Response
+## Response Shape
 
 ```json
 {
-  "group_id": "g1-...",
-  "group": {
-    "name": "field-engineers",
-    "tenant_id": "t1-...",
+  "principal_group_id": "pg-...",
+  "principal_group": {
+    "name": "field-devices",
+    "tenant_id": "tenant-...",
     "member_count": 8
   },
-  "items": [
+  "assignments": [
     {
-      "resource": {
-        "id": "r1-...",
-        "kind": "device",
-        "name": "pump-1",
-        "tenant_id": "t1-..."
+      "assignment_id": "assignment-...",
+      "role": {
+        "id": "role-...",
+        "name": "Plant-A Publisher"
       },
-      "effect": "allow",
-      "scope_kind": "resource_kind",
-      "scope_ref": "device",
-      "policy_id": "p1-...",
-      "grant": {
-        "kind": "role",
-        "role": { "id": "v1-...", "name": "operator" },
-        "capabilities": [
-          { "id": "c1-...", "name": "read" },
-          { "id": "c2-...", "name": "write" },
-          { "id": "c3-...", "name": "execute" }
-        ]
-      },
-      "conditions": {}
-    },
-    {
-      "resource": {
-        "id": "r2-...",
-        "kind": "channel",
-        "name": "telemetry",
-        "tenant_id": "t1-..."
-      },
-      "effect": "allow",
-      "scope_kind": "resource_kind",
-      "scope_ref": "channel",
-      "policy_id": "p2-...",
-      "grant": {
-        "kind": "capability",
-        "role": null,
-        "capabilities": [
-          { "id": "c4-...", "name": "subscribe" }
-        ]
-      },
+      "permissions": [
+        {
+          "applies_to": "channels in Object Group Plant-A",
+          "object_type": "resource:channel",
+          "actions": ["publish"]
+        }
+      ],
       "conditions": {}
     }
   ],
-  "total": 2
+  "total": 1
 }
 ```
 
 ---
 
-## Response fields
+## Use Cases
 
-### Top level
+### What does joining this Principal Group grant?
 
-| Field | Type | Description |
-|---|---|---|
-| `group_id` | UUID | The group being queried |
-| `group` | object | Group details (name, tenant_id, member_count) |
-| `items` | array | Access entries — same shape as entity access items but without `via` (always the group) |
-| `total` | int | Total count (before pagination) |
-
-### Each item in `items`
-
-| Field | Type | Description |
-|---|---|---|
-| `resource` | object | Resource details (id, kind, name, tenant_id) |
-| `effect` | `allow` \| `deny` | Effect |
-| `scope_kind` | `all` \| `resource_kind` \| `resource` | Scope type |
-| `scope_ref` | string \| null | Scope reference |
-| `policy_id` | UUID | The policy binding ID |
-| `grant.kind` | `capability` \| `role` | Grant type |
-| `grant.role` | object \| null | Role info if applicable |
-| `grant.capabilities` | array | Capabilities granted |
-| `conditions` | object | ABAC conditions |
-
----
-
-## Use cases
-
-### 1. "What does joining this group grant?"
-
-```
-GET /groups/g1/access
+```text
+principalGroupAccess(principalGroupId: "field-devices")
 ```
 
-An admin reviews this before adding a new entity to the group.
+An admin reviews this before adding a device or user to the Principal Group.
 
-### 2. "What device access does this group have?"
+### What channel access does this Principal Group grant?
 
+```text
+principalGroupAccess(principalGroupId: "field-devices", objectType: "resource:channel")
 ```
-GET /groups/g1/access?resource_kind=device
-```
 
-### 3. "Does this group have any deny policies?"
+### Does this Principal Group grant publish?
 
-```
-GET /groups/g1/access?effect=deny
+```text
+principalGroupAccess(principalGroupId: "field-devices", action: "publish")
 ```
 
 ---
 
-## Implementation notes
+## Implementation Notes
 
-- Query: find all `policy_bindings WHERE subject_kind = 'group' AND subject_id = $1`, then expand scopes to resources and resolve grants.
-- Scope expansion works the same as entity access (see [02-entity-access.md](./02-entity-access.md)).
-- `member_count` in the group object is computed via `COUNT(*) FROM group_members`.
-- No `via` field needed — all access is from the group itself.
-- If the group is not found, return `404`.
+- Load role assignments where subject is the Principal Group.
+- Expand assigned role permission blocks and actions.
+- Do not use assignment scope; assignments have no scope.
+- Do not query Object Group membership as if it grants access. Object Group only affects whether a role permission block applies to an object.
+- Return resolved names and human-readable `applies_to` labels for UI review.
+- If the Principal Group is not found, return `404`.

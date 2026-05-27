@@ -77,7 +77,12 @@ async fn validate_tenant_owned_policy(
                 ))
             }
         }
-        ScopeKind::ObjectKind | ScopeKind::ObjectType => Ok(()),
+        ScopeKind::ObjectKind
+        | ScopeKind::ObjectType
+        | ScopeKind::GroupObjectType
+        | ScopeKind::GroupTreeObjectType
+        | ScopeKind::GroupChildKind
+        | ScopeKind::GroupDescendantKind => Ok(()),
         ScopeKind::Object => {
             let scope_ref = req
                 .scope_ref

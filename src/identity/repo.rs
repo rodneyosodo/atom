@@ -21,6 +21,7 @@ pub const AUTHENTICATED_USERS_GROUP_ID: Uuid = Uuid::from_u128(5);
 pub async fn create_entity(pool: &PgPool, req: CreateEntity) -> Result<Entity, AppError> {
     let id = req.id.unwrap_or_else(Uuid::new_v4);
     let attrs = normalize_attributes(req.attributes);
+    let parent_group_id = parent_group_id_from_attrs(&attrs)?;
     let (kind, profile_id, profile_version_id) = resolve_entity_profile(
         pool,
         req.kind,
@@ -52,6 +53,9 @@ pub async fn create_entity(pool: &PgPool, req: CreateEntity) -> Result<Entity, A
 
     if is_human {
         add_authenticated_user_membership_in_tx(&mut tx, entity.id).await?;
+    }
+    if let Some(parent_group_id) = parent_group_id {
+        set_entity_parent_group_in_tx(&mut tx, entity.id, parent_group_id).await?;
     }
 
     tx.commit().await.map_err(db_err)?;
@@ -98,25 +102,39 @@ pub async fn list_entities(pool: &PgPool, params: ListEntities) -> Result<Entity
     let profile_id = params.profile_id;
     let tenant_id = params.tenant_id;
     let status = params.status;
+    let parent_group_id = params.parent_group_id;
+    let include_descendants = params.include_descendants;
     let q = search_pattern(params.q);
 
     let items = sqlx::query_as::<_, Entity>(
-        r#"SELECT id, kind, name, tenant_id, profile_id, profile_version_id,
-                  status, attributes, created_at, updated_at
-           FROM entities
-           WHERE ($1::text IS NULL OR kind = $1)
-             AND ($2::uuid IS NULL OR profile_id = $2)
-             AND ($3::uuid IS NULL OR tenant_id = $3)
-             AND ($4::text IS NULL OR status = $4)
-             AND ($5::text IS NULL OR name ILIKE $5 OR attributes::text ILIKE $5)
-           ORDER BY created_at DESC
-           LIMIT $6 OFFSET $7"#,
+        r#"WITH RECURSIVE target_groups(id) AS (
+               SELECT $6::uuid WHERE $6::uuid IS NOT NULL
+               UNION ALL
+               SELECT gh.child_id
+               FROM group_hierarchy gh
+               JOIN target_groups tg ON tg.id = gh.parent_id
+               WHERE $7::boolean
+           )
+           SELECT e.id, e.kind, e.name, e.tenant_id, e.profile_id, e.profile_version_id,
+                  e.status, e.attributes, e.created_at, e.updated_at
+           FROM entities e
+           LEFT JOIN group_entity_parents gep ON gep.entity_id = e.id
+           WHERE ($1::text IS NULL OR e.kind = $1)
+             AND ($2::uuid IS NULL OR e.profile_id = $2)
+             AND ($3::uuid IS NULL OR e.tenant_id = $3)
+             AND ($4::text IS NULL OR e.status = $4)
+             AND ($5::text IS NULL OR e.name ILIKE $5 OR e.attributes::text ILIKE $5)
+             AND ($6::uuid IS NULL OR gep.group_id IN (SELECT id FROM target_groups))
+           ORDER BY e.created_at DESC
+           LIMIT $8 OFFSET $9"#,
     )
     .bind(kind.clone())
     .bind(profile_id)
     .bind(tenant_id)
     .bind(status.clone())
     .bind(q.clone())
+    .bind(parent_group_id)
+    .bind(include_descendants)
     .bind(limit)
     .bind(offset)
     .fetch_all(pool)
@@ -124,18 +142,31 @@ pub async fn list_entities(pool: &PgPool, params: ListEntities) -> Result<Entity
     .map_err(db_err)?;
 
     let total: i64 = sqlx::query_scalar(
-        r#"SELECT COUNT(*) FROM entities
-           WHERE ($1::text IS NULL OR kind = $1)
-             AND ($2::uuid IS NULL OR profile_id = $2)
-             AND ($3::uuid IS NULL OR tenant_id = $3)
-             AND ($4::text IS NULL OR status = $4)
-             AND ($5::text IS NULL OR name ILIKE $5 OR attributes::text ILIKE $5)"#,
+        r#"WITH RECURSIVE target_groups(id) AS (
+               SELECT $6::uuid WHERE $6::uuid IS NOT NULL
+               UNION ALL
+               SELECT gh.child_id
+               FROM group_hierarchy gh
+               JOIN target_groups tg ON tg.id = gh.parent_id
+               WHERE $7::boolean
+           )
+           SELECT COUNT(*)
+           FROM entities e
+           LEFT JOIN group_entity_parents gep ON gep.entity_id = e.id
+           WHERE ($1::text IS NULL OR e.kind = $1)
+             AND ($2::uuid IS NULL OR e.profile_id = $2)
+             AND ($3::uuid IS NULL OR e.tenant_id = $3)
+             AND ($4::text IS NULL OR e.status = $4)
+             AND ($5::text IS NULL OR e.name ILIKE $5 OR e.attributes::text ILIKE $5)
+             AND ($6::uuid IS NULL OR gep.group_id IN (SELECT id FROM target_groups))"#,
     )
     .bind(kind)
     .bind(profile_id)
     .bind(tenant_id)
     .bind(status)
     .bind(q)
+    .bind(parent_group_id)
+    .bind(include_descendants)
     .fetch_one(pool)
     .await
     .map_err(db_err)?;
@@ -145,11 +176,17 @@ pub async fn list_entities(pool: &PgPool, params: ListEntities) -> Result<Entity
 
 pub async fn update_entity(pool: &PgPool, id: Uuid, req: UpdateEntity) -> Result<Entity, AppError> {
     let attributes = req.attributes.map(normalize_attributes);
+    let parent_group_id = attributes
+        .as_ref()
+        .and_then(|attrs| attrs.get("parent_group_id"))
+        .map(parent_group_id_from_value)
+        .transpose()?;
     if let Some(attrs) = attributes.as_ref() {
         validate_existing_entity_attributes(pool, id, attrs).await?;
     }
 
-    sqlx::query_as::<_, Entity>(
+    let mut tx = pool.begin().await.map_err(db_err)?;
+    let entity = sqlx::query_as::<_, Entity>(
         r#"UPDATE entities
            SET name               = COALESCE($2, name),
                kind               = COALESCE($3, kind),
@@ -171,12 +208,130 @@ pub async fn update_entity(pool: &PgPool, id: Uuid, req: UpdateEntity) -> Result
     .bind(req.profile_version_id)
     .bind(req.status)
     .bind(attributes)
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await
     .map_err(|e| match e {
         sqlx::Error::RowNotFound => AppError::not_found(format!("entity {id} not found")),
         other => AppError::Database(other),
-    })
+    })?;
+
+    if let Some(parent_group_id) = parent_group_id {
+        match parent_group_id {
+            Some(parent_group_id) => {
+                set_entity_parent_group_in_tx(&mut tx, entity.id, parent_group_id).await?;
+            }
+            None => clear_entity_parent_group_in_tx(&mut tx, entity.id).await?,
+        }
+    }
+
+    tx.commit().await.map_err(db_err)?;
+    Ok(entity)
+}
+
+pub async fn get_entity_parent_group(
+    pool: &PgPool,
+    entity_id: Uuid,
+) -> Result<Option<Uuid>, AppError> {
+    sqlx::query_scalar("SELECT group_id FROM group_entity_parents WHERE entity_id = $1")
+        .bind(entity_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(db_err)
+}
+
+pub async fn set_entity_parent_group(
+    pool: &PgPool,
+    entity_id: Uuid,
+    group_id: Uuid,
+) -> Result<Entity, AppError> {
+    let mut tx = pool.begin().await.map_err(db_err)?;
+    set_entity_parent_group_in_tx(&mut tx, entity_id, group_id).await?;
+    tx.commit().await.map_err(db_err)?;
+    get_entity(pool, entity_id).await
+}
+
+pub async fn clear_entity_parent_group(pool: &PgPool, entity_id: Uuid) -> Result<Entity, AppError> {
+    let mut tx = pool.begin().await.map_err(db_err)?;
+    clear_entity_parent_group_in_tx(&mut tx, entity_id).await?;
+    tx.commit().await.map_err(db_err)?;
+    get_entity(pool, entity_id).await
+}
+
+async fn set_entity_parent_group_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    entity_id: Uuid,
+    group_id: Uuid,
+) -> Result<(), AppError> {
+    use sqlx::Row;
+    let row = sqlx::query(
+        r#"SELECT e.tenant_id AS entity_tenant_id, g.tenant_id AS group_tenant_id
+           FROM entities e
+           CROSS JOIN groups g
+           WHERE e.id = $1 AND g.id = $2"#,
+    )
+    .bind(entity_id)
+    .bind(group_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(db_err)?
+    .ok_or_else(|| AppError::bad_request("entity parent group reference is invalid"))?;
+    let entity_tenant_id: Option<Uuid> = row.try_get("entity_tenant_id").map_err(db_err)?;
+    let group_tenant_id: Option<Uuid> = row.try_get("group_tenant_id").map_err(db_err)?;
+    let Some(tenant_id) = entity_tenant_id else {
+        return Err(AppError::bad_request(
+            "platform entity cannot be placed in a group",
+        ));
+    };
+    if group_tenant_id != Some(tenant_id) {
+        return Err(AppError::bad_request(
+            "entity and parent group must belong to the same tenant",
+        ));
+    }
+    sqlx::query(
+        r#"INSERT INTO group_entity_parents (group_id, entity_id, tenant_id)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (entity_id) DO UPDATE
+           SET group_id = EXCLUDED.group_id,
+               tenant_id = EXCLUDED.tenant_id,
+               updated_at = now()"#,
+    )
+    .bind(group_id)
+    .bind(entity_id)
+    .bind(tenant_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(db_err)?;
+    Ok(())
+}
+
+async fn clear_entity_parent_group_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    entity_id: Uuid,
+) -> Result<(), AppError> {
+    sqlx::query("DELETE FROM group_entity_parents WHERE entity_id = $1")
+        .bind(entity_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(db_err)?;
+    Ok(())
+}
+
+fn parent_group_id_from_attrs(attrs: &Value) -> Result<Option<Uuid>, AppError> {
+    attrs
+        .get("parent_group_id")
+        .map(parent_group_id_from_value)
+        .transpose()
+        .map(Option::flatten)
+}
+
+fn parent_group_id_from_value(value: &Value) -> Result<Option<Uuid>, AppError> {
+    match value.as_str().map(str::trim) {
+        Some("") | None => Ok(None),
+        Some(raw) => raw
+            .parse::<Uuid>()
+            .map(Some)
+            .map_err(|_| AppError::bad_request("parent_group_id must be a UUID")),
+    }
 }
 
 async fn resolve_entity_profile(
@@ -363,16 +518,18 @@ pub async fn revoke_session(pool: &PgPool, id: Uuid) -> Result<(), AppError> {
 pub async fn create_group(pool: &PgPool, req: CreateGroup) -> Result<Group, AppError> {
     let id = req.id.unwrap_or_else(Uuid::new_v4);
     let attrs = normalize_attributes(req.attributes);
+    let group_type = req.group_type.unwrap_or_else(|| "object".to_string());
     sqlx::query_as::<_, Group>(
-        r#"INSERT INTO groups (id, name, tenant_id, description, attributes)
-           VALUES ($1, $2, $3, $4, $5)
-           RETURNING id, name, tenant_id, description,
+        r#"INSERT INTO groups (id, name, tenant_id, group_type, description, attributes)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           RETURNING id, name, tenant_id, group_type, description,
                      NULL::uuid AS parent_id,
                      status, attributes, created_at, updated_at"#,
     )
     .bind(id)
     .bind(req.name)
     .bind(req.tenant_id)
+    .bind(group_type)
     .bind(req.description)
     .bind(attrs)
     .fetch_one(pool)
@@ -382,7 +539,7 @@ pub async fn create_group(pool: &PgPool, req: CreateGroup) -> Result<Group, AppE
 
 pub async fn get_group(pool: &PgPool, id: Uuid) -> Result<Group, AppError> {
     sqlx::query_as::<_, Group>(
-        r#"SELECT g.id, g.name, g.tenant_id, g.description, gh.parent_id,
+        r#"SELECT g.id, g.name, g.tenant_id, g.group_type, g.description, gh.parent_id,
                   g.status, g.attributes, g.created_at, g.updated_at
            FROM groups g
            LEFT JOIN group_hierarchy gh ON gh.child_id = g.id
@@ -405,13 +562,14 @@ pub async fn list_groups(pool: &PgPool, params: ListGroups) -> Result<GroupList,
     let parent_id = params.parent_id;
 
     let items = sqlx::query_as::<_, Group>(
-        r#"SELECT g.id, g.name, g.tenant_id, g.description, gh.parent_id,
+        r#"SELECT g.id, g.name, g.tenant_id, g.group_type, g.description, gh.parent_id,
                   g.status, g.attributes, g.created_at, g.updated_at
            FROM groups g
            LEFT JOIN group_hierarchy gh ON gh.child_id = g.id
            WHERE ($1::uuid IS NULL OR g.tenant_id = $1)
              AND ($2::text IS NULL OR g.status = $2)
              AND ($3::text IS NULL OR g.name ILIKE $3 OR g.description ILIKE $3 OR g.attributes::text ILIKE $3)
+             AND ($8::text IS NULL OR g.group_type = $8)
              AND (($4::uuid IS NULL AND $5::boolean = FALSE)
                   OR ($5::boolean = TRUE AND gh.parent_id = $4))
            ORDER BY g.created_at DESC
@@ -424,6 +582,7 @@ pub async fn list_groups(pool: &PgPool, params: ListGroups) -> Result<GroupList,
     .bind(parent_id.is_some())
     .bind(limit)
     .bind(offset)
+    .bind(params.group_type.clone())
     .fetch_all(pool)
     .await
     .map_err(db_err)?;
@@ -435,6 +594,7 @@ pub async fn list_groups(pool: &PgPool, params: ListGroups) -> Result<GroupList,
            WHERE ($1::uuid IS NULL OR g.tenant_id = $1)
              AND ($2::text IS NULL OR g.status = $2)
              AND ($3::text IS NULL OR g.name ILIKE $3 OR g.description ILIKE $3 OR g.attributes::text ILIKE $3)
+             AND ($6::text IS NULL OR g.group_type = $6)
              AND (($4::uuid IS NULL AND $5::boolean = FALSE)
                   OR ($5::boolean = TRUE AND gh.parent_id = $4))"#,
     )
@@ -443,6 +603,7 @@ pub async fn list_groups(pool: &PgPool, params: ListGroups) -> Result<GroupList,
     .bind(q)
     .bind(parent_id)
     .bind(parent_id.is_some())
+    .bind(params.group_type)
     .fetch_one(pool)
     .await
     .map_err(db_err)?;
@@ -460,7 +621,7 @@ pub async fn update_group(pool: &PgPool, id: Uuid, req: UpdateGroup) -> Result<G
                attributes  = COALESCE($5, attributes),
                updated_at  = now()
            WHERE id = $1
-           RETURNING id, name, tenant_id, description,
+           RETURNING id, name, tenant_id, group_type, description,
                      (SELECT parent_id FROM group_hierarchy WHERE child_id = groups.id) AS parent_id,
                      status, attributes, created_at, updated_at"#,
     )
@@ -570,6 +731,7 @@ pub async fn list_child_groups(
         ListGroups {
             q: None,
             tenant_id: None,
+            group_type: Some("object".to_string()),
             parent_id: Some(parent_id),
             status: None,
             limit,

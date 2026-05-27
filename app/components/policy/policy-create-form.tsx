@@ -56,7 +56,7 @@ const CAPABILITIES_QUERY = `
 `;
 const ROLES_QUERY = `
   query PolicyFormRoles {
-    roles(limit: 200, offset: 0) { items { id name } }
+    roles(limit: 200, offset: 0) { items { id name derivedKind } }
   }
 `;
 const TENANTS_QUERY = `
@@ -74,6 +74,7 @@ const RESOURCES_QUERY = `
 
 type IdName = { id: string; name: string };
 type ConditionDraft = { id: string; path: string; value: string };
+type RoleOption = IdName & { derivedKind?: string };
 
 type WizardState = {
   effect: "allow" | "deny";
@@ -186,7 +187,7 @@ export function PolicyCreateForm({
   const rolesQ = useQuery({
     queryKey: ["policy-form-roles"],
     queryFn: ({ signal }) =>
-      graphqlClient<{ roles: { items: IdName[] } }>({
+      graphqlClient<{ roles: { items: RoleOption[] } }>({
         query: ROLES_QUERY,
         signal,
       }),
@@ -546,7 +547,7 @@ function GrantStep({
   draft: WizardState;
   onChange: (d: WizardState) => void;
   capabilities: (IdName & { resourceKind: string | null })[];
-  roles: IdName[];
+  roles: RoleOption[];
 }) {
   const options = draft.grantKind === "capability" ? capabilities : roles;
 
@@ -577,8 +578,14 @@ function GrantStep({
               draft.grantKind === "capability" && item
                 ? capabilities.find((c) => c.id === id)
                 : undefined;
+            const role =
+              draft.grantKind === "role" && item
+                ? roles.find((role) => role.id === id)
+                : undefined;
             const label = cap
               ? `${cap.name}${cap.resourceKind ? ` (${cap.resourceKind})` : ""}`
+              : role?.derivedKind
+                ? `${role.name} (${role.derivedKind})`
               : (item?.name ?? id);
             onChange({ ...draft, grantId: id, grantLabel: label });
           }}
@@ -592,7 +599,9 @@ function GrantStep({
                 {"resourceKind" in o &&
                 (o as { resourceKind: string | null }).resourceKind
                   ? `${o.name} (${(o as { resourceKind: string | null }).resourceKind})`
-                  : o.name}
+                  : "derivedKind" in o && (o as RoleOption).derivedKind
+                    ? `${o.name} (${(o as RoleOption).derivedKind})`
+                    : o.name}
               </SelectItem>
             ))}
           </SelectContent>
@@ -619,7 +628,12 @@ function ScopeStep({
 }) {
   const needsRef = draft.scopeKind !== "platform";
   const isTextRef =
-    draft.scopeKind === "object_kind" || draft.scopeKind === "object_type";
+    draft.scopeKind === "object_kind" ||
+    draft.scopeKind === "object_type" ||
+    draft.scopeKind === "group_object_type" ||
+    draft.scopeKind === "group_tree_object_type" ||
+    draft.scopeKind === "group_child_kind" ||
+    draft.scopeKind === "group_descendant_kind";
 
   return (
     <div className="grid gap-4">
@@ -646,6 +660,18 @@ function ScopeStep({
             </SelectItem>
             <SelectItem value="object">
               Specific object — one resource
+            </SelectItem>
+            <SelectItem value="group_object_type">
+              Direct group objects — clients/channels in one group
+            </SelectItem>
+            <SelectItem value="group_tree_object_type">
+              Subgroup objects — clients/channels in subgroups
+            </SelectItem>
+            <SelectItem value="group_child_kind">
+              Direct child groups
+            </SelectItem>
+            <SelectItem value="group_descendant_kind">
+              All subgroup descendants
             </SelectItem>
           </SelectContent>
         </Select>
@@ -675,24 +701,39 @@ function ScopeStep({
       )}
 
       {isTextRef && (
-        <FormRow label="Resource kind">
-          <Select
-            value={draft.scopeRef || undefined}
-            onValueChange={(v) => {
-              onChange({ ...draft, scopeRef: v, scopeLabel: v });
-            }}
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue placeholder="— select resource kind —" />
-            </SelectTrigger>
-            <SelectContent>
-              {resourceKinds.map((k) => (
-                <SelectItem key={k} value={k}>
-                  {k}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+        <FormRow label="Scope reference">
+          {draft.scopeKind === "object_kind" ||
+          draft.scopeKind === "object_type" ? (
+            <Select
+              value={draft.scopeRef || undefined}
+              onValueChange={(v) => {
+                onChange({ ...draft, scopeRef: v, scopeLabel: v });
+              }}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue placeholder="— select resource kind —" />
+              </SelectTrigger>
+              <SelectContent>
+                {resourceKinds.map((k) => (
+                  <SelectItem key={k} value={k}>
+                    {k}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            <Input
+              value={draft.scopeRef}
+              placeholder="groupId:entity:device, groupId:resource:channel, or groupId:group"
+              onChange={(event) =>
+                onChange({
+                  ...draft,
+                  scopeRef: event.target.value,
+                  scopeLabel: event.target.value,
+                })
+              }
+            />
+          )}
         </FormRow>
       )}
 

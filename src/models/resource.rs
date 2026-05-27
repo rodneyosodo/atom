@@ -37,6 +37,8 @@ pub struct ListResources {
     pub q: Option<String>,
     pub kind: Option<String>,
     pub tenant_id: Option<Uuid>,
+    pub parent_group_id: Option<Uuid>,
+    pub include_descendants: bool,
     #[serde(default = "default_limit")]
     pub limit: i64,
     #[serde(default)]

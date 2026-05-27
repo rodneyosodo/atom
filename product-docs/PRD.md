@@ -19,9 +19,10 @@ Atom provides three main product areas:
 
    - entities: humans, devices, services, workloads, and applications;
    - tenants: isolation boundaries such as Magistrala domains;
-   - groups: collections of entities used for shared access;
+   - Object Groups: boundaries that contain protected objects;
+   - Principal Groups: collections of identities used for shared access;
    - resources: protected application objects such as channels;
-   - roles: reusable bundles of capabilities;
+   - roles: reusable permission sets;
    - credentials: passwords, API keys, and future credential types;
    - ownerships: parent-child relationships between entities.
 
@@ -43,7 +44,7 @@ Atom provides three main product areas:
 
    - capabilities;
    - roles;
-   - policy bindings;
+   - assignments;
    - RBAC;
    - ABAC;
    - group-based access;
@@ -52,7 +53,7 @@ Atom provides three main product areas:
    - access query endpoints;
    - audit logs.
 
-Applications such as Magistrala store product-specific metadata in `attributes`. Runtime services call Atom for authorization decisions instead of embedding permissions in tokens. Operators use Atom's query APIs to understand access, debug denials, and keep the policy graph clean.
+Applications such as Magistrala store product-specific metadata in `attributes`. Runtime services call Atom for authorization decisions instead of embedding permissions in tokens. Operators use Atom's query APIs to understand access, debug denials, and keep the assignment graph clean.
 
 ---
 
@@ -77,7 +78,7 @@ The current project needs a single PRD because the important product intent is s
 1. Provide a compact identity and authorization service that is simple to deploy, operate, and reason about.
 2. Support humans, devices, services, workloads, and applications using one consistent entity model.
 3. Support password login, JWT sessions, API keys, and future credential types without changing the core entity model.
-4. Provide policy-based authorization with RBAC, ABAC, direct grants, group grants, and deny-overrides semantics.
+4. Provide role-based authorization with assignments, optional ABAC conditions, trusted internal policy-backed direct capability grants, and deny-overrides semantics.
 5. Make tenants first-class isolation boundaries, with Magistrala domains mapping directly to Atom tenants.
 6. Keep authorization online: every access decision is evaluated against current database state.
 7. Provide explain, access listing, audit, and hygiene endpoints so operators can understand and maintain access state.
@@ -100,7 +101,7 @@ The current project needs a single PRD because the important product intent is s
 
 ### Platform operator
 
-Runs Atom, configures tenants, rotates credentials, inspects audit logs, and cleans up stale policies.
+Runs Atom, configures tenants, rotates credentials, inspects audit logs, and cleans up stale assignments.
 
 Needs:
 
@@ -108,11 +109,11 @@ Needs:
 - simple bootstrap admin path;
 - auditability;
 - admin-only management APIs;
-- hygiene reports for broken policy state.
+- hygiene reports for broken assignment state.
 
 ### Application backend
 
-Calls Atom from Magistrala or another service to create identities, create resources, bind policies, and check authorization at runtime.
+Calls Atom from Magistrala or another service to create identities, create resources, assign roles, and check authorization at runtime.
 
 Needs:
 
@@ -123,7 +124,7 @@ Needs:
 
 ### Security administrator
 
-Manages roles, groups, policies, and incident investigations.
+Manages roles, Object Groups, Principal Groups, assignments, and incident investigations.
 
 Needs:
 
@@ -131,18 +132,18 @@ Needs:
 - "who can access this resource?";
 - "what can this entity do?";
 - "who holds this role?";
-- "which policies are orphaned or risky?".
+- "which assignments are orphaned or risky?".
 
 ### Magistrala integrator
 
-Maps Magistrala users, clients, groups, domains, and channels to Atom primitives.
+Maps Magistrala users, clients, Object Groups, Principal Groups, domains, and channels to Atom primitives.
 
 Needs:
 
 - direct domain-to-tenant mapping;
 - client API keys;
 - channel publish/subscribe checks;
-- group and role based authorization;
+- Principal Group and role based authorization;
 - Magistrala metadata preserved under `attributes.magistrala`.
 
 ---
@@ -152,9 +153,9 @@ Needs:
 1. **Entity first**: every principal is an entity. `human`, `device`, `service`, `workload`, and `application` are kinds of the same object.
 2. **Tenant as boundary**: a tenant is an isolation boundary, not a principal. Global objects use `tenant_id = null`.
 3. **Online authorization**: tokens authenticate identity; they do not authorize actions.
-4. **Default deny**: no matching allow policy means denied.
-5. **Deny overrides allow**: a matching deny policy wins immediately.
-6. **Composable access**: direct grants, roles, groups, scopes, and ABAC conditions can combine.
+4. **Default deny**: no matching allow assignment means denied.
+5. **Deny overrides allow**: a matching deny wins immediately.
+6. **Human-friendly access**: roles define actions and where they apply; assignments define who gets the role.
 7. **Explainable operations**: every important access question should be answerable through Atom APIs.
 8. **Application metadata stays namespaced**: application-owned fields live in `attributes`, for example `attributes.magistrala`.
 9. **Operational simplicity**: one binary, one database, migrations on startup.
@@ -174,15 +175,15 @@ Status values:
 - `frozen`
 - `deleted`
 
-Entities, groups, resources, and roles can be scoped to a tenant through `tenant_id`. Magistrala domains map directly to Atom tenants; the Magistrala domain UUID should be reused as `tenants.id`.
+Entities, resources, Object Groups, Principal Groups, and roles can belong to a tenant through `tenant_id`. Magistrala domains map directly to Atom tenants; the Magistrala domain UUID should be reused as `tenants.id`.
 
 When a tenant is created, Atom must bootstrap tenant administration:
 
-- create a tenant-scoped role named `tenant-admin`;
+- create a tenant-owned role named `tenant-admin`;
 - grant that role tenant administration capability for the created tenant;
 - bind that role to the entity that created the tenant.
 
-The generated `tenant-admin` role is the starting administrative role for that tenant. It is not a hardcoded global role. A tenant admin can later create other tenant-scoped roles such as `tenant-manager`, `operator`, `viewer`, or `auditor`.
+The generated `tenant-admin` role is the starting administrative role for that tenant. It is not a hardcoded global role. A tenant admin can later create other tenant-owned roles such as `tenant-manager`, `operator`, `viewer`, or `auditor`.
 
 Tenant lifecycle affects authorization. If a tenant is `inactive`, `frozen`, or `deleted`, Atom must deny authorization checks for objects inside that tenant and return a reason that includes the tenant state.
 
@@ -194,177 +195,50 @@ tenant is frozen
 tenant is deleted
 ```
 
-### Platform Policy Inheritance
+### Platform Roles
 
-`platform` is the top of the scope hierarchy. A grant with `scope_kind = platform` inherits into every tenant for the same capability, just as a tenant grant inherits into objects whose `tenant_id` matches the tenant.
+Platform roles are tenant-free roles reserved for system, admin, and service automation.
 
 Examples:
 
-- `platform` + `manage` → super admin. Manage every platform-level object and, through inheritance, every object in every tenant.
-- `platform` + `tenant.manage` → tenant lifecycle manager. Create, update, freeze, and delete any tenant. Does not inherit into objects inside tenants.
-- `platform` + `audit.read` → read every audit log across the platform and every tenant.
+- platform admin: manage platform-level objects and tenant administration workflows;
+- tenant lifecycle manager: create, update, freeze, and delete tenants through `tenant.manage`;
+- cross-tenant service role: allow trusted services to operate across tenants.
 
-Platform inheritance applies per capability. A platform grant of one capability does not extend to other capabilities through inheritance.
+Normal tenant users must not create tenant-free roles. Tenant-free roles require platform-level administration.
 
-### Tenant Policy Inheritance
+### Tenant Administration Role
 
-A tenant policy can be used to grant access over objects inside a tenant.
+For tenant administration, Atom uses tenant-owned roles with permission blocks that apply inside the tenant.
 
-The core rule is:
+The generated `tenant-admin` role should include permission blocks for:
 
-```text
-If a subject has capability X on tenant T,
-then the subject may use capability X on tenant-scoped objects where tenant_id = T.
-```
+- normal tenant objects through `manage`;
+- tenant audit logs through `audit.read`;
+- credentials for tenant-owned entities through `credential.manage`;
+- tenant-owned assignments through `policy.manage`;
+- tenant-owned roles through `role.manage`.
 
-Example:
+The seeded `tenant-admin` role intentionally does not include platform `tenant.manage`. A tenant admin cannot rename, freeze, or delete their own tenant unless a platform admin explicitly delegates that ability.
 
-```text
-Alice has manage on tenant factory-1
-```
-
-This can allow Alice to manage objects inside `factory-1`, such as:
-
-- entities in `factory-1`;
-- groups in `factory-1`;
-- resources in `factory-1`;
-- roles in `factory-1`;
-- policies in `factory-1`;
-- credentials for tenant-scoped entities in `factory-1`;
-- audit logs associated with `factory-1`.
-
-Tenant policy inheritance must never apply to:
-
-- another tenant's objects;
-- global platform objects where `tenant_id = null`;
-- platform-wide administration such as signing key rotation;
-- global capabilities or global guardrail rules unless separately allowed by platform policy.
-
-There are two possible models for tenant policy inheritance.
-
-#### Option A: Equal Inheritance
-
-In this model, tenant capabilities apply equally to all tenant-scoped object types.
-
-Example:
-
-```text
-manage on tenant = manage everything inside the tenant
-read on tenant = read everything inside the tenant
-```
-
-If Alice has `manage` on tenant `factory-1`, she can manage:
-
-- tenant entities;
-- tenant groups;
-- tenant resources;
-- tenant roles;
-- tenant policies;
-- tenant-scoped credentials;
-- tenant audit logs.
-
-Benefits:
-
-- simple to explain;
-- simple to implement;
-- useful for MVP;
-- easy for platform admins to reason about;
-- matches the common expectation of a tenant admin.
-
-Risks:
-
-- broad access;
-- `read` on a tenant may include sensitive objects such as audit logs or credential metadata;
-- `manage` on a tenant may allow powerful operations such as policy changes and credential revocation;
-- mistakes in one tenant-level policy can affect many object types.
-
-#### Option B: Sensitive Object Capabilities
-
-In this model, tenant policy inheritance applies broadly, but sensitive object types require specific capabilities.
-
-Example:
-
-```text
-manage on tenant = manage normal tenant objects
-read_audit on tenant = read tenant audit logs
-manage_credentials on tenant = manage tenant credentials
-manage_policies on tenant = manage tenant policies
-```
-
-Under this model, Alice may have `manage` on tenant `factory-1`, but still need explicit capabilities to:
-
-- read audit logs;
-- revoke credentials;
-- create or delete tenant policies;
-- create another tenant admin;
-- view sensitive credential metadata.
-
-Benefits:
-
-- safer;
-- clearer security boundaries;
-- easier to give limited roles such as tenant viewer, support user, auditor, or credential operator.
-
-Costs:
-
-- more capabilities;
-- more policy complexity;
-- more UI/API decisions;
-- harder to implement correctly in the first version.
-
-#### MVP Choice
-
-For tenant administration, Atom uses a split model:
-
-```text
-manage on tenant grants administration over normal tenant-scoped objects.
-Sensitive tenant operations require explicit sensitive capabilities.
-```
-
-This means the generated `tenant-admin` role should include:
-
-- `manage` on the tenant;
-- `audit.read` for tenant audit logs;
-- `credential.manage` for credentials of tenant-scoped entities;
-- `policy.manage` for tenant-owned policies;
-- `role.manage` for tenant-scoped roles.
-
-The seeded `tenant-admin` role intentionally does not include `tenant.manage`. A tenant admin cannot rename, freeze, or delete their own tenant; those operations require a platform admin holding `tenant.manage` with `scope_kind = platform`. If self-service tenant metadata management is needed later, `tenant.manage` can be added to the role with scope set to the role's owning tenant.
-
-With those capabilities, a tenant admin can manage:
-
-- entities in the tenant through `manage`;
-- groups in the tenant through `manage`;
-- resources in the tenant through `manage`;
-- roles in the tenant through `role.manage`;
-- policies in the tenant through `policy.manage`;
-- credentials for tenant-scoped entities through `credential.manage`;
-- audit logs for the tenant through `audit.read`.
-
-Tenant credential access follows entity scope:
-
-- a tenant admin can manage credentials for tenant-scoped entities in that tenant;
-- a tenant admin cannot manage credentials for global human users with `tenant_id = null` unless separately allowed by platform policy;
-- a tenant admin cannot manage platform admin credentials unless separately allowed by platform policy.
-
-However, broad tenant inheritance is intended for tenant administration, mainly by `human` and trusted `service` entities. It should not be used as the normal model for device runtime access.
-
-Device and workload runtime permissions should normally be granted through explicit resource, resource-kind, role, or group policies.
+Device and workload runtime permissions should normally be granted through roles and assignments, or through trusted internal policy-backed direct capability grants for strict runtime links such as client-channel publish/subscribe.
 
 Example:
 
 ```text
 Good:
-device sensor-1 has publish on channel temperature
+Role Sensor Publisher applies to channel temperature with action publish.
+Assignment gives Sensor Publisher to device sensor-1.
 
 Good:
-group floor-sensors has publish on resource_kind channel
+Role Field Device Publisher applies to channels in Object Group Plant-A.
+Assignment gives Field Device Publisher to Principal Group Field Devices.
 
 Risky:
-device sensor-1 has publish on tenant factory-1
+device sensor-1 receives broad tenant administration access.
 ```
 
-The risky form may be allowed only if capability assignment guardrails permit it. By default, guardrails should prevent devices from receiving broad tenant-level administration capabilities such as `manage`, `write`, or `delete`.
+By default, capability applicability and guardrails should prevent devices from receiving broad tenant-level administration capabilities such as `manage`, `write`, or `delete`.
 
 ### Entity
 
@@ -387,7 +261,7 @@ tenant_id = this object belongs to this tenant
 tenant membership = this human participates in this tenant
 ```
 
-For devices, services, workloads, applications, groups, resources, roles, policies, and audit logs, `tenant_id` should represent tenant ownership or boundary.
+For devices, services, workloads, applications, Object Groups, Principal Groups, resources, roles, assignments, and audit logs, `tenant_id` should represent tenant ownership or boundary.
 
 Examples:
 
@@ -395,7 +269,8 @@ Examples:
 sensor-1 belongs to factory-1
 channel-1 belongs to factory-1
 role operator belongs to factory-1
-group floor-sensors belongs to factory-1
+Object Group plant-a belongs to factory-1
+Principal Group operators belongs to factory-1
 ```
 
 This direct `tenant_id` model keeps tenant filtering, uniqueness, lifecycle enforcement, and authorization checks simple.
@@ -408,7 +283,7 @@ kind = human
 tenant_id = null
 ```
 
-Alice can administer or access one or more tenants through policy bindings without becoming tenant-scoped:
+Alice can administer or access one or more tenants through role assignments without becoming tenant-scoped:
 
 ```text
 Alice has tenant-admin on factory-1
@@ -433,7 +308,7 @@ tenant_memberships (
 )
 ```
 
-This table is used for human participation, tenant-local profile, tenant-local status, and invitation lifecycle. It does not replace direct `tenant_id` ownership for devices, resources, groups, roles, policies, or audit logs.
+This table is used for human participation, tenant-local profile, tenant-local status, and invitation lifecycle. It does not replace direct `tenant_id` ownership for devices, resources, Object Groups, Principal Groups, roles, assignments, or audit logs.
 
 Entity is the principal model. Some entities can also be protected objects when another entity manages them.
 
@@ -454,7 +329,7 @@ Examples:
 
 This avoids treating every manageable entity as a separate application resource. The same record can act as a subject in one request and be protected as an object in another request.
 
-Entity subtypes are not separate protected object kinds. Atom should use `object_kind = "entity"` plus an entity-kind filter when a policy or authorization check targets humans, devices, services, workloads, or applications.
+Entity subtypes are not separate protected object kinds. Atom should use `object_kind = "entity"` plus an entity-kind filter when a role permission block or authorization check targets humans, devices, services, workloads, or applications.
 
 Examples:
 
@@ -513,7 +388,7 @@ Credential management authority follows the entity's `tenant_id`, not tenant mem
 - A tenant admin may manage credentials only for entities owned by that tenant (`entity.tenant_id = <tenant>`).
 - A tenant admin must not manage credentials for entities owned by another tenant.
 - A tenant admin must not manage credentials for global entities (`tenant_id = null`), even if the global entity participates in that tenant through `tenant_memberships`. Membership grants presence and access in a tenant; it does not grant the tenant's admin credential authority over the member.
-- Credentials of global entities can be managed only by a platform admin, unless platform policy explicitly delegates credential authority over a specific global entity to a specific tenant admin.
+- Credentials of global entities can be managed only by a platform admin, unless platform assignment explicitly delegates credential authority over a specific global entity to a specific tenant admin.
 - This rule applies to all credential operations: create, rotate, revoke, and read.
 
 ### Session and JWT
@@ -526,33 +401,103 @@ A resource is an application object protected by authorization, such as a channe
 
 Resources have a kind, optional name, optional tenant, optional owner, and attributes.
 
-### Group
+### Object Group
 
-A group is a named collection of entities. Policies can bind to groups, and group members inherit those policy bindings.
+An Object Group is a named boundary/container for protected objects inside a tenant.
+
+Object Groups answer:
+
+```text
+where does this role apply?
+```
+
+Object Groups can contain protected objects:
+
+- clients/devices (`entity.kind = device` or `service`)
+- channels (`resource.kind = channel`)
+- rules
+- reports
+- alarms
+- child Object Groups
+
+Object Group supports nesting:
+
+```text
+Factory-1
+  Plant-A
+    Line-1
+      client1
+      channel1
+    Line-2
+      client2
+      channel2
+```
+
+Object Group rules:
+
+- Object Group is not a subject that receives roles.
+- Object Group containment alone grants no access.
+- One object belongs to one Object Group in V1.
+- Nested Object Groups are used only for boundary matching.
+
+### Principal Group
+
+A Principal Group is a named collection of identities.
+
+Principal Groups answer:
+
+```text
+who receives this role?
+```
+
+Principal Groups can contain:
+
+- humans
+- services
+- applications
+- workloads
+- devices if needed
+
+Examples:
+
+```text
+Principal Group Operators = alice, bob
+Principal Group MG Services = mg-service, reports-service
+```
+
+Principal Group rules:
+
+- Principal Group is a subject that can receive role assignments.
+- Principal Group is not an object boundary.
+- Principal Groups are flat in V1.
 
 ### Capability
 
-A capability is an atomic permission such as:
+A capability is a global action name such as:
 
 - `read`
-- `create`
 - `write`
-- `update`
 - `delete`
 - `publish`
 - `subscribe`
 - `execute`
 - `manage`
-- `list`
 - `credential.manage`
-- `credential.revoke`
 - `signing_key.rotate`
 - `audit.read`
 - `policy.manage`
 - `role.manage`
 - `tenant.manage`
 
-A capability may apply globally or to one resource kind.
+Do not create object-specific capability names such as:
+
+```text
+client_read
+channel_publish
+report_execute
+```
+
+The action is global. Applicability decides where the action is valid.
 
 Capabilities are not limited to the list above. The seeded set should cover common platform, tenant administration, and runtime use cases. Product-specific capabilities may be added by platform administrators.
 
@@ -560,14 +505,38 @@ Recommended capability groups:
 
 | Group | Capabilities | Purpose |
 |---|---|---|
-| General object access | `read`, `list`, `create`, `write`, `update`, `delete`, `manage` | Administrative CRUD and object management |
+| General object access | `read`, `write`, `delete`, `manage` | Administrative CRUD and object management |
 | Messaging/runtime | `publish`, `subscribe`, `execute` | Device, workload, and service runtime operations |
-| Credentials and keys | `credential.manage`, `credential.revoke`, `signing_key.rotate` | Credential lifecycle and key rotation |
+| Credentials and keys | `credential.manage`, `signing_key.rotate` | Credential lifecycle and key rotation |
 | Access control | `policy.manage`, `role.manage` | Policy and role administration |
 | Tenant administration | `tenant.manage`, `manage` | Tenant lifecycle and tenant-scoped administration |
 | Audit | `audit.read` | Audit log access |
 
-Devices should normally receive only runtime-oriented capabilities such as `publish`, `subscribe`, and limited `read` for configuration or state. Devices should not receive administrative capabilities such as `manage`, `create`, `write`, `update`, or `delete` by default.
+Devices should normally receive only runtime-oriented capabilities such as `publish`, `subscribe`, and limited `read` for configuration or state. Devices should not receive administrative capabilities such as `manage`, `write`, or `delete` by default.
+
+### Capability Applicability
+
+Capability Applicability says which object types support which actions.
+
+It validates the role model. It does not grant access.
+
+Examples:
+
+| Capability | Valid objects |
+|---|---|
+| `read`, `write`, `delete` | common protected objects such as entities, resources, Object Groups, rules, reports, and alarms |
+| `publish`, `subscribe` | channels |
+| `execute` | rules and reports |
+| `credential.manage` | entity credentials |
+| `tenant.manage` | tenant lifecycle |
+| `role.manage`, `policy.manage` | roles and assignments |
+
+Invalid capability/object pairs must be rejected:
+
+```text
+publish on client -> invalid
+execute on channel -> invalid
+```
 
 ### Object Kinds
 
@@ -593,89 +562,129 @@ The **type** (`object_type`) is the finer sub-kind, written as `<kind>:<sub-kind
 
 For kinds without sub-kinds (`group`, `tenant`, `role`, `policy`, `credential`, `audit_log`), `object_type` is null.
 
-The kind prefix on `object_type` is intentionally redundant with `object_kind` so that audit logs and explain output are self-describing. Bare values such as `device` or `channel` must not appear as `scope_ref`, as a stored `object_type`, or in audit records.
+The kind prefix on `object_type` is intentionally redundant with `object_kind` so that audit logs and explain output are self-describing. Bare values such as `device` or `channel` must not appear as stored object type values or in audit records.
 
-These values must be used consistently across policy scopes, guardrail rules, authorization checks, and audit logs.
+These values must be used consistently across capability applicability, role permission blocks, authorization checks, guardrail rules, and audit logs.
 
 ### Role
 
-A role is a named bundle of capabilities, optionally scoped to a tenant.
+A role is a named set of permission blocks.
 
-### Policy Binding
+Each permission block says:
 
-A policy binding grants or denies a capability or role to an entity or group over a scope.
+```text
+where it applies + actions
+```
 
-Policy fields:
+Example:
 
-- `tenant_id`: tenant that owns the policy binding, or `null` for global platform policy
-- `subject_kind`: `entity` or `group`
-- `subject_id`: entity or group UUID
-- `grant_kind`: `capability` or `role`
-- `grant_id`: capability or role UUID
-- `scope_kind`: `platform`, `tenant`, `object_kind`, `object_type`, or `object`
-- `scope_ref`: tenant UUID, object kind, object type, or object UUID when needed
-- `effect`: `allow` or `deny`
-- `conditions`: flat JSON object of ABAC dot-path conditions
+```text
+Role: Plant-A Operator
 
-Policy bindings should store `tenant_id` directly. Inferring tenant ownership from subject, role, resource scope, or conditions is too ambiguous for tenant administration, query APIs, guardrails, and audit.
+Permission block 1:
+  Applies to: clients in Object Group Plant-A
+  Actions: read, write
+
+Permission block 2:
+  Applies to: channels in Object Group Plant-A
+  Actions: read, publish, subscribe
+```
+
+Normal roles are tenant-owned:
+
+```text
+role.tenant_id = tenant.id
+```
+
+Tenant-free platform roles are reserved for:
+
+- system admin
+- Atom internal services
+- Magistrala service entities
+- cross-tenant service automation
+
+Normal UI must not allow tenant users to create tenant-free roles.
+
+### Assignment
+
+Assignment is the human-facing name for granting a role to a subject.
+
+An assignment connects:
+
+```text
+subject -> role
+```
+
+Subject can be:
+
+- a single entity
+- a Principal Group
 
 Rules:
 
-- `tenant_id = null` means platform/global policy.
-- `tenant_id = <tenant>` means tenant-owned policy.
-- tenant admins can manage policies only for their tenant.
-- global/platform policies require platform-level permission.
-- a tenant-owned policy must not grant access outside its tenant unless explicitly allowed by platform policy.
-
-Policy scope meanings:
-
-| Scope kind | Meaning | Example |
-|---|---|---|
-| `platform` | Top of the scope hierarchy. Applies to platform-level objects and inherits into every tenant for the same capability. | platform admin (`manage`), tenant lifecycle manager (`tenant.manage`) |
-| `tenant` | Applies to one tenant and, through tenant inheritance, tenant-scoped objects | manage tenant `factory-1` |
-| `object_kind` | Applies to all objects of a kind in the policy boundary | manage all entities in tenant A |
-| `object_type` | Applies to a subtype of an object kind | manage all `entity:device` objects in tenant A |
-| `object` | Applies to one specific object ID | manage one device entity |
-
-`object_type` is always namespaced with its kind as the prefix, joined by a colon:
-
-```text
-entity:human
-entity:device
-entity:service
-entity:workload
-entity:application
-resource:channel
-resource:<app-defined>
-```
-
-Bare values such as `device` or `channel` must not appear as `scope_ref` or as a stored `object_type`. For kinds without sub-kinds (`group`, `tenant`, `role`, `policy`, `credential`, `audit_log`), `object_type` is null.
+- Assignment has no scope. The role already defines where access applies.
+- Role tenant must match the subject tenant context.
+- Principal Group tenant must match role tenant.
+- Cross-tenant assignment is allowed only for platform/system roles.
+- Normal UI should show "assignment", not "policy binding".
 
 Examples:
 
 ```text
-manage all entities in tenant A
-scope_kind = object_kind
-scope_ref = entity
-tenant_id = tenant A
+Assign Plant-A Operator to user1
+Assign Plant-A Operator to Principal Group Operators
+Assign MG Cross Tenant Service to mg-service
 ```
 
-```text
-manage all devices in tenant A
-scope_kind = object_type
-scope_ref = entity:device
-tenant_id = tenant A
-```
+### Advanced Policy Features
+
+Under the hood, Atom may still represent assignments and advanced security rules as policy records. That internal representation must not leak into normal product language.
+
+Deny and ABAC conditions remain part of the security model, but normal UI should focus on allow role assignment.
+
+Direct capability grants are trusted internal policy records. They may be used for machine-created runtime links, such as strict client-channel publish/subscribe connections.
+
+Internal policy record types:
 
 ```text
-manage one specific device
-scope_kind = object
-scope_ref = <device entity UUID>
+role assignment policy = gives a role to an entity or Principal Group
+direct capability policy = trusted subject/action/object grant
+deny/conditional policy = advanced security rule
 ```
+
+Conceptual direct capability policy shape:
+
+```text
+subject = entity or Principal Group
+action = capability
+object = protected entity/resource/Object Group/tenant
+effect = allow or deny
+conditions = optional advanced rules
+```
+
+Guardrails:
+
+- Direct capability grants are not exposed in normal UI.
+- Direct capability grants are created only by trusted service/system flows.
+- Direct capability grants are audited.
+- The main role model remains role permission blocks plus assignments.
+- Atom must not add a separate `direct_grants` table; direct capability grants reuse the internal policy model.
+
+### Listing Rule
+
+Atom should not require a separate `list` capability for normal object listing.
+
+Listing means:
+
+```text
+return objects the caller can read
+```
+
+This must be implemented through SQL authorization filtering, not by loading every object and checking access one by one.
 
 ### ABAC Conditions
 
-Policy bindings may include `conditions`. Conditions are a flat JSON object where keys are dot-paths. Each value is either a literal (treated as `eq`) or an object specifying an operator. All conditions must match for the policy binding to apply.
+Advanced assignments may include `conditions`. Conditions are a flat JSON object where keys are dot-paths. Each value is either a literal (treated as `eq`) or an object specifying an operator. All conditions must match for the assignment to apply.
 
 Supported operators:
 
@@ -696,7 +705,7 @@ Operator example:
 }
 ```
 
-If a referenced field is missing on the subject, object, tenant, or context, the condition does not match and the policy binding does not apply.
+If a referenced field is missing on the subject, object, tenant, or context, the condition does not match and the assignment does not apply.
 
 ABAC conditions may reference three categories of data:
 
@@ -767,7 +776,7 @@ Example condition:
 This means:
 
 ```text
-Apply this policy only when a human from operations is acting on a device at plant-a, inside an active tenant, after MFA verification.
+Apply this advanced conditional assignment only when a human from operations is acting on a device at plant-a, inside an active tenant, after MFA verification.
 ```
 
 Top-level fields and attributes are both required. Top-level fields provide stable system facts such as kind, tenant, status, and object type. Attributes provide application-specific facts such as department, region, tags, site, plan, or Magistrala metadata.
@@ -785,7 +794,7 @@ Can subject X do action Y on object Z?
 Capability assignment guardrails answer a different question:
 
 ```text
-Is it safe to create this policy, role binding, role capability, or group membership?
+Is it safe to create this assignment, role permission, policy-backed direct capability grant, or Principal Group membership?
 ```
 
 This prevents unsafe access from being created accidentally.
@@ -794,21 +803,21 @@ Example:
 
 - A `device` should usually be allowed to `publish` to a `channel`.
 - A `device` should usually not be allowed to `create`, `write`, `delete`, or `manage` a `channel`.
-- A `human` or trusted `service` may be allowed to manage tenant resources if a policy grants it.
+- A `human` or trusted `service` may be allowed to manage tenant resources if a role assignment grants it.
 - A tenant may define stricter local rules, but platform-level absolute denies cannot be overridden by a tenant.
 
-The PDP stays generic and policy-based. Guardrails run when access is assigned or changed.
+The PDP stays generic and evaluates current access state. Guardrails run when access is assigned or changed.
 
 Guardrails should be evaluated when:
 
-- creating a policy binding;
-- binding a role to an entity;
-- binding a role to a group;
-- adding a capability to a role;
-- adding an entity to a group that already has policies;
-- creating tenant-scoped admin roles during tenant creation.
+- creating a role assignment;
+- assigning a role to an entity;
+- assigning a role to a Principal Group;
+- adding an action to a role permission block;
+- adding an entity to a Principal Group that already has role assignments;
+- creating tenant-owned admin roles during tenant creation.
 
-Direct grants, role grants, and group grants must all be validated. Otherwise an unsafe grant can be hidden inside a role or inherited through a group.
+Direct grants, role assignments, and Principal Group membership changes must all be validated. Otherwise unsafe access can be hidden inside a role or inherited through a Principal Group.
 
 Recommended storage:
 
@@ -878,16 +887,13 @@ Recommended rule precedence:
 
 This means tenants can become stricter than the platform defaults. Tenants can add local allows only where the platform has not declared an absolute deny.
 
-Example rejected policy:
+Example rejected assignment:
 
 ```json
 {
   "subject_kind": "entity",
   "subject_id": "device-id",
-  "grant_kind": "capability",
-  "grant_id": "delete-channel-capability-id",
-  "scope_kind": "object_type",
-  "scope_ref": "resource:channel"
+  "role_id": "channel-admin-role-id"
 }
 ```
 
@@ -902,17 +908,17 @@ Response:
 
 Example role validation:
 
-- Role `channel-admin` contains `delete` on `channel`.
-- A policy tries to bind `channel-admin` to a `device`.
-- Atom expands the role capabilities during assignment validation.
+- Role `channel-admin` has a permission block with `delete` on channels.
+- An assignment tries to give `channel-admin` to a `device`.
+- Atom expands the role permission blocks during assignment validation.
 - The assignment is rejected because `device + delete + resource:channel` is denied.
 
-Example group validation:
+Example Principal Group validation:
 
-- Group `floor-sensors` has a policy that grants `publish` to channels.
+- Principal Group `floor-sensors` has an assignment to a role that grants `publish` to channels.
 - Adding a `device` to `floor-sensors` is allowed.
-- If the group later receives `delete` on channels, Atom must validate all current group members and reject the policy if devices would inherit a denied capability.
-- If a group already has `delete` on channels, adding a `device` to that group must be rejected.
+- If the Principal Group later receives a role with `delete` on channels, Atom must validate all current group members and reject the assignment if devices would inherit a denied capability.
+- If a Principal Group already has `delete` on channels, adding a `device` to that group must be rejected.
 
 MVP recommendation:
 
@@ -920,11 +926,11 @@ MVP recommendation:
 - Seed global default rules for common entity kinds and common capabilities.
 - Support optional tenant-specific rules.
 - Allow tenant admins to create stricter tenant-specific deny rules.
-- Validate policy creation, role binding, role capability changes, and group membership changes.
+- Validate assignment creation, role permission changes, and Principal Group membership changes.
 - Make deny beat allow.
 - Make absolute global deny impossible to override.
 - Audit every rejected assignment and every override.
-- Keep the PDP unchanged: guardrails prevent unsafe policies from being created, while `/authz/check` continues to evaluate existing policies.
+- Keep the PDP unchanged in purpose: guardrails prevent unsafe access state from being created, while `/authz/check` continues to evaluate current assignments.
 
 ---
 
@@ -943,7 +949,7 @@ Priority levels: "Must" items are required for general availability and ship acr
 | ID-5 | Entity names must be unique per tenant. | Must |
 | ID-6 | The system must support global entities with `tenant_id = null`. | Must |
 | ID-7 | Entity `tenant_id` must represent ownership or home tenant, not access membership. | Must |
-| ID-8 | Human users must be global by default, with tenant access granted through policies. | Must |
+| ID-8 | Human users must be global by default, with tenant access granted through role assignments. | Must |
 | ID-9 | The MVP must not require duplicate tenant-local human entities for the same person. | Must |
 | ID-10 | Atom must provide a tenant membership table for human tenant participation, tenant-local profile, tenant-local status, and invitations. | Must |
 
@@ -970,14 +976,14 @@ Priority levels: "Must" items are required for general availability and ship acr
 | TEN-1 | The system must expose first-class tenant CRUD and lifecycle APIs. | Must |
 | TEN-2 | Tenant lifecycle must support active, inactive, frozen, and deleted states. | Must |
 | TEN-3 | Tenant deletion must be soft delete by setting status to `deleted`. | Must |
-| TEN-4 | Tenant create, update, freeze, and delete operations must require `tenant.manage` with `scope_kind = platform`. | Must |
-| TEN-5 | Entities, groups, resources, and roles must be able to reference tenants by `tenant_id`. | Must |
+| TEN-4 | Tenant create, update, freeze, and delete operations must require platform `tenant.manage`. | Must |
+| TEN-5 | Entities, resources, Object Groups, Principal Groups, and roles must be able to reference tenants by `tenant_id`. | Must |
 | TEN-6 | Magistrala domains must map directly to Atom tenants. | Must |
 | TEN-7 | Authorization checks must support tenant objects through `object_kind = "tenant"` and `object_id`. | Must |
-| TEN-8 | Tenant policy inheritance must allow tenant capabilities to apply to objects whose `tenant_id` matches the tenant. | Must |
+| TEN-8 | Tenant-wide role permission blocks must apply only to objects whose `tenant_id` matches the tenant. | Must |
 | TEN-9 | For MVP, `manage` on a tenant must grant administration over normal tenant-scoped objects, while sensitive operations use explicit capabilities. | Must |
-| TEN-10 | Tenant policy inheritance must not apply to other tenants or global platform objects where `tenant_id = null`. | Must |
-| TEN-11 | Device and workload runtime access should normally use explicit resource, resource-kind, role, or group policies rather than broad tenant inheritance. | Should |
+| TEN-10 | Tenant-owned role permission blocks must not apply to other tenants or global platform objects where `tenant_id = null`. | Must |
+| TEN-11 | Device and workload runtime access should normally use roles, assignments, and trusted internal policy-backed direct capability grants rather than broad tenant administration access. | Should |
 | TEN-12 | Atom must create a tenant-scoped `tenant-admin` role for every new tenant. | Must |
 | TEN-13 | The tenant creator must receive the generated `tenant-admin` role. | Must |
 | TEN-14 | Authorization checks for inactive, frozen, or deleted tenants must be denied with a reason that includes tenant state. | Must |
@@ -992,12 +998,12 @@ Priority levels: "Must" items are required for general availability and ship acr
 | AZ-2 | The system must support resource checks by `resource_id`. | Must |
 | AZ-3 | The system must support protected object checks by `object_kind` and `object_id`. | Must |
 | AZ-4 | The PDP must load the subject and require it to be active. | Must |
-| AZ-5 | The PDP must resolve the requested capability by action and protected object kind. | Must |
-| AZ-6 | The PDP must evaluate direct entity policy bindings. | Must |
-| AZ-7 | The PDP must evaluate group policy bindings inherited through membership. | Must |
-| AZ-8 | The PDP must support role grants by resolving role capabilities. | Must |
-| AZ-9 | The PDP must batch-load role capabilities before evaluating policy bindings. | Must |
-| AZ-10 | The PDP must support scopes `platform`, `tenant`, `object_kind`, `object_type`, and `object`. | Must |
+| AZ-5 | The PDP must resolve the requested capability by action and validate capability applicability for the protected object type. | Must |
+| AZ-6 | The PDP must evaluate direct entity role assignments. | Must |
+| AZ-7 | The PDP must evaluate Principal Group role assignments inherited through membership. | Must |
+| AZ-8 | The PDP must evaluate role permission blocks and their actions. | Must |
+| AZ-9 | The PDP must batch-load role permission blocks and actions before evaluating assignments. | Must |
+| AZ-10 | The PDP must support role permission boundaries for platform, tenant, object kind, object type, exact object, and Object Group containment. | Must |
 | AZ-11 | The PDP must support ABAC conditions against top-level fields, attributes, and request context. | Must |
 | AZ-12 | A matching deny must override any allow. | Must |
 | AZ-13 | No matching allow must return denied. | Must |
@@ -1005,8 +1011,8 @@ Priority levels: "Must" items are required for general availability and ship acr
 | AZ-15 | The system must expose gRPC authorization check APIs for runtime integrations. gRPC is runtime-only for now; management APIs remain HTTP-only. Management APIs may be added to gRPC later if needed. | Should |
 | AZ-16 | Authorization checks must evaluate tenant lifecycle state for tenant-scoped objects. | Must |
 | AZ-17 | Entity subtypes must be represented as `object_kind = entity` with an entity-kind/object-type filter, not as separate protected object kinds. | Must |
-| AZ-18 | Policy scopes must support `platform`, `tenant`, `object_kind`, `object_type`, and `object`. | Must |
-| AZ-19 | Entity subtype policy scopes must use object type values such as `entity:device` and `entity:human`. | Must |
+| AZ-18 | Assignments must not have a separate scope; where access applies must come from the assigned role's permission blocks. | Must |
+| AZ-19 | Entity subtype permission blocks must use object type values such as `entity:device` and `entity:human`. | Must |
 | AZ-20 | ABAC conditions must support top-level fields such as `entity.kind`, `entity.tenant_id`, `tenant.status`, `object.kind`, and `object.type`. | Must |
 | AZ-21 | ABAC conditions must support JSON attributes such as `entity.attributes.*`, `resource.attributes.*`, `tenant.attributes.*`, and `object.attributes.*`. | Must |
 | AZ-22 | ABAC conditions must support request context fields such as `context.ip`, `context.client_id`, and `context.mfa_verified`. | Must |
@@ -1015,34 +1021,34 @@ Priority levels: "Must" items are required for general availability and ship acr
 
 | ID | Requirement | Priority |
 |---|---|---|
-| AM-1 | The system must create, list, read, and delete roles. | Must |
-| AM-2 | The system must add and remove capabilities on roles. | Must |
+| AM-1 | The system must create, list, read, update, and delete tenant-owned roles. | Must |
+| AM-2 | The system must add, update, and remove role permission blocks and their actions. | Must |
 | AM-3 | The system must create, list, read, and delete capabilities. | Must |
-| AM-4 | Capability and policy mutation must require manage permission. | Must |
-| AM-5 | The system must create, list, read, and delete policy bindings. | Must |
-| AM-6 | The system must create and delete groups. | Must |
-| AM-7 | The system must add, list, and remove group members. | Must |
+| AM-4 | Capability, role, and assignment mutation must require manage permission. | Must |
+| AM-5 | The system must create, list, read, and delete role assignments. | Must |
+| AM-6 | The system must create, update, nest, and delete Object Groups. | Must |
+| AM-7 | The system must create and delete Principal Groups and add, list, and remove Principal Group members. | Must |
 | AM-8 | The system must support ownership relationships between entities. | Should |
-| AM-9 | Policy bindings must store `tenant_id` directly, with `null` reserved for platform/global policies. | Must |
-| AM-10 | Tenant admins must be able to manage policy bindings owned by their tenant. | Must |
-| AM-11 | Tenant-owned policies must not grant access outside their tenant unless separately allowed by platform policy. | Must |
+| AM-9 | Role assignments must store tenant ownership directly, with `null` reserved for platform/system assignments. | Must |
+| AM-10 | Tenant admins must be able to manage role assignments owned by their tenant. | Must |
+| AM-11 | Tenant-owned role assignments must not grant access outside their tenant unless the assigned role is a platform/system role. | Must |
 
 ### Capability Assignment Guardrails
 
 | ID | Requirement | Priority |
 |---|---|---|
-| GR-1 | The system must support capability assignment rules that define which entity kinds may receive which capabilities for which object/resource kinds. | Must |
+| GR-1 | The system must support capability applicability rules that define which actions are valid for which object types. | Must |
 | GR-2 | The system must support global guardrail rules with `tenant_id = null`. | Must |
 | GR-3 | The system must support tenant-specific guardrail rules. | Should |
 | GR-4 | The system must support absolute global denies that tenant-specific rules cannot override. | Must |
-| GR-5 | The system must validate direct capability grants before creating policy bindings. | Must |
-| GR-6 | The system must validate role grants by expanding role capabilities before creating policy bindings. | Must |
-| GR-7 | The system must validate role capability changes against existing role holders. | Must |
-| GR-8 | The system must validate group policy changes against existing group members. | Must |
-| GR-9 | The system must validate group membership changes against policies the new member would inherit. | Must |
+| GR-5 | The system must validate trusted internal policy-backed direct capability grants before creating them. | Must |
+| GR-6 | The system must validate role assignments by checking the assigned role's permission blocks and actions. | Must |
+| GR-7 | The system must validate role permission changes against existing role holders. | Must |
+| GR-8 | The system must validate Principal Group assignment changes against existing group members. | Must |
+| GR-9 | The system must validate Principal Group membership changes against assignments the new member would inherit. | Must |
 | GR-10 | The system should support `require_override` for assignments that are risky but platform-admin approved. | Should |
 | GR-11 | The system must audit rejected assignments and override-based assignments. | Must |
-| GR-12 | Guardrails must not replace PDP evaluation; they prevent unsafe policy state from being created. | Must |
+| GR-12 | Guardrails must not replace PDP evaluation; they prevent unsafe access state from being created. | Must |
 | GR-13 | Platform admins must manage global guardrail rules. | Must |
 | GR-14 | Tenant admins may create only stricter tenant-specific guardrail rules in MVP. | Should |
 | GR-15 | Tenant admins must not override global absolute deny guardrail rules. | Must |
@@ -1056,9 +1062,9 @@ Priority levels: "Must" items are required for general availability and ship acr
 | QRY-3 | The system must list who can access a resource. | Must |
 | QRY-4 | The system must expose audit logs with useful filters. | Must |
 | QRY-5 | The system should list who holds a role. | Should |
-| QRY-6 | The system should list what access a group grants. | Should |
+| QRY-6 | The system should list what access a Principal Group grants. | Should |
 | QRY-7 | The system should list an entity's effective capabilities. | Should |
-| QRY-8 | The system should report orphaned policies. | Should |
+| QRY-8 | The system should report orphaned assignments. | Should |
 | QRY-9 | The system should report unprotected resources. | Should |
 | QRY-10 | The system should report expiring credentials. | Should |
 
@@ -1093,7 +1099,7 @@ Rules:
 | MAG-2 | Magistrala users must map to global `human` entities. | Must |
 | MAG-3 | Magistrala clients must map to `device` or `service` entities scoped to a tenant. | Must |
 | MAG-4 | Magistrala channels must map to `resource` rows with `kind = "channel"`. | Must |
-| MAG-5 | Client-channel publish and subscribe permissions must be expressible as Atom policy bindings. | Must |
+| MAG-5 | Client-channel publish and subscribe permissions must be expressible as Atom role assignments or trusted internal policy-backed direct capability grants. | Must |
 | MAG-6 | Magistrala metadata must be stored under `attributes.magistrala`. | Must |
 | MAG-7 | Magistrala runtime access checks must call Atom instead of maintaining a separate authorization database. | Must |
 
@@ -1105,19 +1111,20 @@ Atom must expose these API categories:
 
 - Health: service health check.
 - Authentication: login, logout, session read, JWKS, signing key rotation.
-- Entities: entity CRUD and entity group membership views.
+- Entities: entity CRUD and Principal Group membership views.
 - Credentials: password creation, API key creation, credential listing, credential revocation.
 - Tenants: tenant CRUD and lifecycle transitions.
-- Groups: group CRUD and membership management.
+- Object Groups: boundary CRUD, hierarchy, and object containment management.
+- Principal Groups: principal collection CRUD and membership management.
 - Ownerships: entity-to-entity parent/child relations.
 - Resources: protected object CRUD.
-- Roles: role CRUD and role-capability membership.
+- Roles: role CRUD and permission block management.
 - Capabilities: capability CRUD.
-- Policies: policy binding CRUD.
+- Assignments: role assignment CRUD.
 - Authorization: single check, bulk check, explain.
-- Query endpoints: entity access, resource access, group access, role holders, effective capabilities.
+- Query endpoints: entity access, resource access, Principal Group access, role holders, effective capabilities.
 - Audit: audit log listing.
-- Admin hygiene: orphan policies, unprotected resources, expiring credentials.
+- Admin hygiene: orphan assignments, unprotected resources, expiring credentials.
 - gRPC: runtime authorization-oriented service interface only for now; management APIs remain HTTP-only unless added later.
 
 Detailed endpoint requirements are maintained in the linked product docs:
@@ -1129,10 +1136,11 @@ Detailed endpoint requirements are maintained in the linked product docs:
 5. [GET /audit](./04-audit.md)
 6. [POST /authz/check/bulk](./05-bulk-check.md)
 7. [GET /roles/:id/holders](./06-role-holders.md)
-8. [GET /groups/:id/access](./07-group-access.md)
+8. [Principal Group access](./07-group-access.md)
 9. [GET /entities/:id/effective-capabilities](./08-effective-capabilities.md)
 10. [Admin hygiene endpoints](./09-admin-hygiene.md)
 11. [Building Magistrala on Atom](./10-magistrala-on-atom.md)
+12. [Atom access model](./11-access-model-simplification.md)
 
 ---
 
@@ -1162,8 +1170,8 @@ Detailed endpoint requirements are maintained in the linked product docs:
 
 ### Performance
 
-- Authorization checks must avoid per-policy role capability queries.
-- Role capabilities must be batch-loaded for authorization evaluation.
+- Authorization checks must avoid per-assignment role permission queries.
+- Role permission blocks and actions must be batch-loaded for authorization evaluation.
 - API key authentication must avoid full credential-table scans by using the embedded credential ID.
 - List endpoints must support pagination.
 
@@ -1171,7 +1179,7 @@ Detailed endpoint requirements are maintained in the linked product docs:
 
 - Existing `resource_id` authorization checks must remain supported.
 - New `object_kind` and `object_id` authorization checks must not break the legacy shape.
-- Legacy callers may send `resource_kind = "channel"` over HTTP; the API translates this to `object_type = "resource:channel"` at the edge before storing or evaluating. The legacy form must not appear in stored policy bindings, guardrail rules, or audit records.
+- Legacy callers may send `resource_kind = "channel"` over HTTP during migration; new APIs should use object type values such as `resource:channel`. The legacy form must not appear in stored role permission blocks, assignment records, guardrail rules, or audit records.
 - HTTP and gRPC authorization semantics must match.
 
 ---
@@ -1180,7 +1188,7 @@ Detailed endpoint requirements are maintained in the linked product docs:
 
 Atom is successful when:
 
-- Magistrala can model domains, users, clients, channels, groups, and permissions without a separate auth database.
+- Magistrala can model domains, users, clients, channels, Object Groups, Principal Groups, roles, and permissions without a separate auth database.
 - Runtime services can answer authorization decisions through Atom with deterministic deny-by-default behavior.
 - Operators can answer "why denied?", "who can access this?", and "what can this entity access?" without direct SQL.
 - Credential creation, revocation, and audit inspection can be done through APIs.
@@ -1200,7 +1208,7 @@ Atom is successful when:
 - Resources
 - Capabilities
 - Roles
-- Policies
+- Assignments
 - Single authorization check
 - Audit table and basic audit writes
 - Admin bootstrap
@@ -1213,7 +1221,7 @@ Atom is successful when:
 - Audit listing endpoint
 - Bulk check endpoint
 - Role holders endpoint
-- Group access endpoint
+- Principal Group access endpoint
 - Effective capabilities endpoint
 - Admin hygiene endpoints
 
@@ -1224,7 +1232,7 @@ Atom is successful when:
 - Tenant admin role bootstrap on tenant creation
 - Tenant creator receives the generated `tenant-admin` role
 - Tenant memberships table for human tenant participation
-- `tenant_id` on policy bindings
+- `tenant_id` on role assignments
 - `tenant_id` on audit logs
 - Tenant lifecycle enforcement in authorization checks
 - Object-based authorization checks for tenants
@@ -1238,9 +1246,9 @@ Atom is successful when:
 - Global default assignment rules
 - Tenant-specific assignment rules
 - Absolute global deny support
-- Validation during policy creation
-- Validation during role binding and role capability updates
-- Validation during group membership changes
+- Validation during assignment creation
+- Validation during role assignment and role permission updates
+- Validation during Principal Group membership changes
 - Rejected-assignment and override audit logs
 
 ### Phase 5: Future extensions
@@ -1258,7 +1266,7 @@ Atom is successful when:
 
 ## Open Questions
 
-1. **Guardrail validation on large groups (GR-8, GR-9).** When a policy or membership change requires re-validating all existing group members, and the group has tens or hundreds of thousands of members, should validation be synchronous (transactional, but slow) or asynchronous (fast, but unsafe state can exist briefly)? Decide the model and any size threshold.
+1. **Guardrail validation on large Principal Groups (GR-8, GR-9).** When an assignment or membership change requires re-validating all existing Principal Group members, and the group has tens or hundreds of thousands of members, should validation be synchronous (transactional, but slow) or asynchronous (fast, but unsafe state can exist briefly)? Decide the model and any size threshold.
 
 2. **`require_override` workflow (GR-10).** Is `require_override` a synchronous flag a platform admin sets on the request, or a multi-step approval workflow (request → approval → apply)? Define the API shape and the audit trail.
 

@@ -23,6 +23,14 @@ pub struct CreateRole {
     pub scope_ref: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoleDerivedKind {
+    Simple,
+    Composite,
+    Empty,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct UpdateRole {
     pub name: Option<String>,
@@ -34,6 +42,7 @@ pub struct ListRoles {
     pub tenant_id: Option<Uuid>,
     pub scope_kind: Option<String>,
     pub scope_ref: Option<String>,
+    pub derived_kind: Option<String>,
     pub q: Option<String>,
     #[serde(default = "default_limit")]
     pub limit: i64,
@@ -54,4 +63,29 @@ pub struct RoleList {
 #[derive(Debug, Deserialize)]
 pub struct AddRoleCapability {
     pub capability_id: Uuid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct RolePermissionBlock {
+    pub id: Uuid,
+    pub role_id: Uuid,
+    pub applies_to: String,
+    pub object_id: Option<Uuid>,
+    pub object_kind: Option<String>,
+    pub object_type: Option<String>,
+    pub tenant_id: Option<Uuid>,
+    pub group_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateRolePermissionBlock {
+    pub applies_to: String,
+    pub object_id: Option<Uuid>,
+    pub object_kind: Option<String>,
+    pub object_type: Option<String>,
+    pub tenant_id: Option<Uuid>,
+    pub group_id: Option<Uuid>,
+    pub capability_ids: Vec<Uuid>,
 }

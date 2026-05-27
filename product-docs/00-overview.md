@@ -17,7 +17,7 @@ Administrators, security auditors, and operators cannot answer basic questions w
 - "Why was this entity denied?"
 - "Who will be affected if I change this role?"
 - "Who can access this production resource?"
-- "Are there any broken or orphaned policies?"
+- "Are there any broken or orphaned assignments?"
 
 These questions apply to all entity kinds equally — humans, devices, services, workloads, and applications.
 
@@ -28,7 +28,7 @@ These questions apply to all entity kinds equally — humans, devices, services,
 1. Enable administrators to understand and debug the authorization state without direct database access.
 2. Provide reverse lookups (resource → subjects, role → holders) for impact analysis.
 3. Expose audit logs for compliance and troubleshooting.
-4. Surface system hygiene issues (orphaned policies, unprotected resources, expiring credentials).
+4. Surface system hygiene issues (orphaned assignments, unprotected resources, expiring credentials).
 5. No schema changes — all endpoints query existing tables.
 
 ## Non-goals
@@ -56,15 +56,15 @@ These questions apply to all entity kinds equally — humans, devices, services,
 |---|----------|----------|---------|
 | 5 | `POST /authz/check/bulk` | Authorization | Check multiple actions in one call |
 | 6 | `GET /roles/:id/holders` | Role-centric | Who holds this role? |
-| 7 | `GET /groups/:id/access` | Group-centric | What access does this group grant? |
+| 7 | Principal Group access query | Principal Group-centric | What access does this Principal Group grant? |
 | 8 | `GET /entities/:id/effective-capabilities` | Entity-centric | Flat resolved capability list |
 
 ### Priority 3 — Nice-to-have
 
 | # | Endpoint | Category | Purpose |
 |---|----------|----------|---------|
-| 9 | `GET /admin/orphan-policies` | Hygiene | Policies referencing deleted objects |
-| 10 | `GET /admin/unprotected-resources` | Hygiene | Resources with no policy coverage |
+| 9 | Orphan assignment query | Hygiene | Assignments referencing deleted objects |
+| 10 | `GET /admin/unprotected-resources` | Hygiene | Resources with no read-access coverage |
 | 11 | `GET /admin/expiring-credentials` | Hygiene | Credentials expiring within N days |
 
 ---
@@ -107,13 +107,16 @@ No schema changes required.
 
 Each endpoint is specified in its own document:
 
+> Note: the access model was simplified after several endpoint drafts were written. [Atom access model](./11-access-model-simplification.md) is authoritative. Endpoint drafts marked as legacy must be rewritten before implementation to use roles, permission blocks, assignments, Object Groups, and Principal Groups.
+
 1. [POST /authz/explain](./01-authz-explain.md)
 2. [GET /entities/:id/access](./02-entity-access.md)
 3. [GET /resources/:id/access](./03-resource-access.md)
 4. [GET /audit](./04-audit.md)
 5. [POST /authz/check/bulk](./05-bulk-check.md)
 6. [GET /roles/:id/holders](./06-role-holders.md)
-7. [GET /groups/:id/access](./07-group-access.md)
+7. [Principal Group access](./07-group-access.md)
 8. [GET /entities/:id/effective-capabilities](./08-effective-capabilities.md)
 9. [Admin hygiene endpoints](./09-admin-hygiene.md)
 10. [Building Magistrala on Atom](./10-magistrala-on-atom.md)
+11. [Atom access model](./11-access-model-simplification.md)

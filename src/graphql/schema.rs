@@ -169,6 +169,7 @@ mod tests {
             "ownedEntities",
             "roles",
             "role",
+            "subjectRoleAssignments",
             "capabilities",
             "capability",
             "policies",
@@ -192,17 +193,30 @@ mod tests {
             "enableTenant",
             "disableTenant",
             "freezeTenant",
+            "removeTenantMember",
             "createProfile",
             "createProfileVersion",
             "createEntity",
+            "addEntityToObjectGroup",
+            "removeEntityFromObjectGroup",
+            "setEntityParentGroup",
+            "clearEntityParentGroup",
             "createResource",
             "updateResource",
+            "addResourceToObjectGroup",
+            "removeResourceFromObjectGroup",
+            "setResourceParentGroup",
+            "clearResourceParentGroup",
             "deleteResource",
             "createApiEndpoint",
             "updateApiEndpoint",
             "enableApiEndpoint",
             "disableApiEndpoint",
             "createGroup",
+            "createObjectGroup",
+            "createPrincipalGroup",
+            "setObjectGroupParent",
+            "removeObjectGroupParent",
             "deleteGroup",
             "addGroupMember",
             "removeGroupMember",
@@ -215,6 +229,14 @@ mod tests {
             "deleteRole",
             "addRoleCapability",
             "removeRoleCapability",
+            "replaceRolePermissionBlocks",
+            "addCompositeRoleChild",
+            "removeCompositeRoleChild",
+            "replaceCompositeRoleChildren",
+            "assignRoleToEntity",
+            "assignRoleToPrincipalGroup",
+            "removeAssignment",
+            "removeRoleAssignment",
             "createCapability",
             "deleteCapability",
             "createPolicy",
@@ -305,6 +327,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn roles_query_exposes_derived_kind_filter() {
+        let schema = build_schema(test_state());
+
+        let response = schema
+            .execute(Request::new(
+                r#"
+                {
+                  __schema {
+                    queryType {
+                      fields {
+                        name
+                        args { name }
+                      }
+                    }
+                  }
+                }
+                "#,
+            ))
+            .await;
+
+        assert!(response.errors.is_empty(), "{:?}", response.errors);
+        let data = response.data.into_json().expect("json data");
+        let query_fields = data["__schema"]["queryType"]["fields"]
+            .as_array()
+            .expect("query fields");
+        let roles_field = query_fields
+            .iter()
+            .find(|field| field["name"].as_str() == Some("roles"))
+            .expect("roles field");
+        let arg_names = field_names(&roles_field["args"]);
+
+        assert!(arg_names.contains("derivedKind"));
+    }
+
+    #[tokio::test]
+    async fn subject_role_assignments_query_exposes_role_and_policy() {
+        let schema = build_schema(test_state());
+
+        let response = schema
+            .execute(Request::new(
+                r#"
+                {
+                  __schema {
+                    queryType {
+                      fields {
+                        name
+                        args { name }
+                      }
+                    }
+                  }
+                  assignmentType: __type(name: "SubjectRoleAssignment") {
+                    fields { name }
+                  }
+                }
+                "#,
+            ))
+            .await;
+
+        assert!(response.errors.is_empty(), "{:?}", response.errors);
+        let data = response.data.into_json().expect("json data");
+        let query_fields = data["__schema"]["queryType"]["fields"]
+            .as_array()
+            .expect("query fields");
+        let field = query_fields
+            .iter()
+            .find(|field| field["name"].as_str() == Some("subjectRoleAssignments"))
+            .expect("subjectRoleAssignments field");
+        let arg_names = field_names(&field["args"]);
+
+        assert!(arg_names.contains("subjectKind"));
+        assert!(arg_names.contains("subjectId"));
+        assert!(arg_names.contains("tenantId"));
+        assert!(arg_names.contains("derivedKind"));
+
+        let fields = field_names(&data["assignmentType"]["fields"]);
+        assert!(fields.contains("policy"));
+        assert!(fields.contains("role"));
+    }
+
+    #[tokio::test]
     async fn schema_enum_values_match_atom_storage_values() {
         let schema = build_schema(test_state());
 
@@ -345,7 +447,17 @@ mod tests {
         assert_eq!(enum_names(&data, "grantKind"), set(&["capability", "role"]));
         assert_eq!(
             enum_names(&data, "scopeKind"),
-            set(&["platform", "tenant", "object_kind", "object_type", "object"])
+            set(&[
+                "platform",
+                "tenant",
+                "object_kind",
+                "object_type",
+                "object",
+                "group_object_type",
+                "group_tree_object_type",
+                "group_child_kind",
+                "group_descendant_kind",
+            ])
         );
         assert_eq!(enum_names(&data, "effect"), set(&["allow", "deny"]));
         assert_eq!(
@@ -377,9 +489,9 @@ mod tests {
             dev_allow_unverified_email_login: false,
             public_base_url: "http://localhost:8080".into(),
             cors_allowed_origins: vec!["http://localhost:8080".into()],
-            email_verification_redirect: "http://localhost:3005/verify-email".into(),
-            password_reset_redirect: "http://localhost:3005/reset-password".into(),
-            invitation_redirect: "http://localhost:3005/invitations/accept".into(),
+            email_verification_redirect: "http://localhost:8080/auth/email/verify".into(),
+            password_reset_redirect: "http://localhost:8080/reset-password".into(),
+            invitation_redirect: "http://localhost:8080/invitations/accept".into(),
             oauth_success_redirect: "http://localhost:8080".into(),
             oauth_error_redirect: "http://localhost:8080".into(),
             oidc_providers: vec![],

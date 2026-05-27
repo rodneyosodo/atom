@@ -113,7 +113,8 @@ pub(crate) fn gql_error(err: AppError) -> async_graphql::Error {
     match &err {
         AppError::Database(sqlx::Error::Database(db)) => match db.code().as_deref() {
             Some("23505") => async_graphql::Error::new("already exists"),
-            Some("23503") | Some("23514") => async_graphql::Error::new(db.message()),
+            Some("23503") => async_graphql::Error::new("invalid reference"),
+            Some("23514") => async_graphql::Error::new("invalid value"),
             Some(_) | None => {
                 tracing::error!("db error: {}", db);
                 async_graphql::Error::new("database error")

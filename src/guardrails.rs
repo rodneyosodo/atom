@@ -146,6 +146,105 @@ pub async fn validate_role_capability(
     validate_assignments(pool, &assignments).await
 }
 
+pub async fn validate_composite_role_assignment_plan(
+    pool: &PgPool,
+    entity_ids: &[Uuid],
+    child_role_ids: &[Uuid],
+    tenant_id: Option<Uuid>,
+) -> Result<(), AppError> {
+    if entity_ids.is_empty() || child_role_ids.is_empty() {
+        return Ok(());
+    }
+
+    let mut unique_entity_ids = entity_ids.to_vec();
+    unique_entity_ids.sort_unstable();
+    unique_entity_ids.dedup();
+    let mut unique_child_role_ids = child_role_ids.to_vec();
+    unique_child_role_ids.sort_unstable();
+    unique_child_role_ids.dedup();
+
+    let entity_kinds =
+        sqlx::query_scalar::<_, String>("SELECT kind FROM entities WHERE id = ANY($1::uuid[])")
+            .bind(&unique_entity_ids)
+            .fetch_all(pool)
+            .await
+            .map_err(db_err)?;
+    if entity_kinds.len() != unique_entity_ids.len() {
+        return Err(AppError::bad_request("invalid member reference"));
+    }
+
+    let role_capabilities = role_capability_assignments(pool, &unique_child_role_ids).await?;
+    let assignments = entity_kinds
+        .into_iter()
+        .flat_map(|entity_kind| {
+            role_capabilities.iter().map(move |role_cap| Assignment {
+                entity_kind: entity_kind.clone(),
+                capability_name: role_cap.capability_name.clone(),
+                object_kind: role_cap.object_kind.clone(),
+                object_type: role_cap.object_type.clone(),
+                tenant_id,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    validate_assignments(pool, &assignments).await
+}
+
+pub async fn validate_role_assignment_plan(
+    pool: &PgPool,
+    entity_ids: &[Uuid],
+    capability_ids: &[Uuid],
+    tenant_id: Option<Uuid>,
+    scope_kind: ScopeKind,
+    scope_ref: Option<&str>,
+) -> Result<(), AppError> {
+    if entity_ids.is_empty() || capability_ids.is_empty() {
+        return Ok(());
+    }
+
+    let mut unique_entity_ids = entity_ids.to_vec();
+    unique_entity_ids.sort_unstable();
+    unique_entity_ids.dedup();
+    let mut unique_capability_ids = capability_ids.to_vec();
+    unique_capability_ids.sort_unstable();
+    unique_capability_ids.dedup();
+
+    let entity_kinds =
+        sqlx::query_scalar::<_, String>("SELECT kind FROM entities WHERE id = ANY($1::uuid[])")
+            .bind(&unique_entity_ids)
+            .fetch_all(pool)
+            .await
+            .map_err(db_err)?;
+    if entity_kinds.len() != unique_entity_ids.len() {
+        return Err(AppError::bad_request("invalid member reference"));
+    }
+
+    let capability_names = capability_names(pool, &unique_capability_ids).await?;
+    if capability_names.len() != unique_capability_ids.len() {
+        return Err(AppError::bad_request("invalid capability reference"));
+    }
+
+    let (object_kind, object_type) = scope_to_object(scope_kind, scope_ref);
+    let assignments = entity_kinds
+        .into_iter()
+        .flat_map(|entity_kind| {
+            let object_kind = object_kind.clone();
+            let object_type = object_type.clone();
+            capability_names
+                .iter()
+                .map(move |capability_name| Assignment {
+                    entity_kind: entity_kind.clone(),
+                    capability_name: capability_name.clone(),
+                    object_kind: object_kind.clone(),
+                    object_type: object_type.clone(),
+                    tenant_id,
+                })
+        })
+        .collect::<Vec<_>>();
+
+    validate_assignments(pool, &assignments).await
+}
+
 pub async fn validate_group_member(
     pool: &PgPool,
     group_id: Uuid,
@@ -160,9 +259,17 @@ pub async fn validate_group_member(
         .map_err(db_err)?;
 
     let rows = sqlx::query(
-        r#"SELECT pb.tenant_id, pb.grant_kind, pb.grant_id, pb.scope_kind, pb.scope_ref
+        r#"WITH RECURSIVE policy_groups(group_id) AS (
+               SELECT $1::uuid
+               UNION ALL
+               SELECT gh.parent_id
+               FROM group_hierarchy gh
+               JOIN policy_groups pg ON pg.group_id = gh.child_id
+           )
+           SELECT pb.tenant_id, pb.grant_kind, pb.grant_id, pb.scope_kind, pb.scope_ref
            FROM policy_bindings pb
-           WHERE pb.subject_kind = 'group' AND pb.subject_id = $1"#,
+           WHERE pb.subject_kind = 'group'
+             AND pb.subject_id IN (SELECT group_id FROM policy_groups)"#,
     )
     .bind(group_id)
     .fetch_all(pool)
@@ -277,10 +384,17 @@ async fn subject_entity_kinds(
             .await
             .map_err(db_err),
         SubjectKind::Group => sqlx::query_scalar(
-            r#"SELECT DISTINCT e.kind
+            r#"WITH RECURSIVE subject_groups(group_id) AS (
+                   SELECT $1::uuid
+                   UNION ALL
+                   SELECT gh.child_id
+                   FROM group_hierarchy gh
+                   JOIN subject_groups sg ON sg.group_id = gh.parent_id
+               )
+               SELECT DISTINCT e.kind
                FROM group_members gm
                JOIN entities e ON e.id = gm.entity_id
-               WHERE gm.group_id = $1"#,
+               WHERE gm.group_id IN (SELECT group_id FROM subject_groups)"#,
         )
         .bind(subject_id)
         .fetch_all(pool)
@@ -299,15 +413,62 @@ async fn capability_names(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<String>, Ap
 
 async fn role_capability_names(pool: &PgPool, role_id: Uuid) -> Result<Vec<String>, AppError> {
     sqlx::query_scalar(
-        r#"SELECT c.name
-           FROM role_capabilities rc
-           JOIN capabilities c ON c.id = rc.capability_id
-           WHERE rc.role_id = $1"#,
+        r#"SELECT DISTINCT c.name
+           FROM (
+             SELECT $1::uuid AS role_id
+             UNION ALL
+             SELECT child_role_id AS role_id
+             FROM role_composites
+             WHERE parent_role_id = $1
+           ) roles
+           JOIN role_capabilities rc ON rc.role_id = roles.role_id
+           JOIN capabilities c ON c.id = rc.capability_id"#,
     )
     .bind(role_id)
     .fetch_all(pool)
     .await
     .map_err(db_err)
+}
+
+#[derive(Debug, Clone)]
+struct RoleCapabilityAssignment {
+    capability_name: String,
+    object_kind: String,
+    object_type: Option<String>,
+}
+
+async fn role_capability_assignments(
+    pool: &PgPool,
+    role_ids: &[Uuid],
+) -> Result<Vec<RoleCapabilityAssignment>, AppError> {
+    if role_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    use sqlx::Row;
+    sqlx::query(
+        r#"SELECT c.name AS capability_name, r.scope_kind, r.scope_ref
+           FROM roles r
+           JOIN role_capabilities rc ON rc.role_id = r.id
+           JOIN capabilities c ON c.id = rc.capability_id
+           WHERE r.id = ANY($1::uuid[])"#,
+    )
+    .bind(role_ids)
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)?
+    .into_iter()
+    .map(|row| {
+        let scope_kind: ScopeKind = row.try_get("scope_kind").map_err(db_err)?;
+        let scope_ref: Option<String> = row.try_get("scope_ref").map_err(db_err)?;
+        let (object_kind, object_type) = scope_to_object(scope_kind, scope_ref.as_deref());
+        Ok(RoleCapabilityAssignment {
+            capability_name: row.try_get("capability_name").map_err(db_err)?,
+            object_kind,
+            object_type,
+        })
+    })
+    .collect()
 }
 
 fn scope_to_object(scope_kind: ScopeKind, scope_ref: Option<&str>) -> (String, Option<String>) {
@@ -320,6 +481,15 @@ fn scope_to_object(scope_kind: ScopeKind, scope_ref: Option<&str>) -> (String, O
             .map(|(kind, value)| (kind.to_string(), Some(value.to_string())))
             .unwrap_or_else(|| ("unknown".to_string(), None)),
         ScopeKind::Object => ("object".to_string(), None),
+        ScopeKind::GroupObjectType | ScopeKind::GroupTreeObjectType => scope_ref
+            .and_then(|value| value.split_once(':').map(|(_, object_type)| object_type))
+            .and_then(|object_type| {
+                object_type
+                    .split_once(':')
+                    .map(|(kind, _)| (kind.to_string(), Some(object_type.to_string())))
+            })
+            .unwrap_or_else(|| ("unknown".to_string(), None)),
+        ScopeKind::GroupChildKind | ScopeKind::GroupDescendantKind => ("group".to_string(), None),
     }
 }
 

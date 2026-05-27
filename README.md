@@ -19,6 +19,65 @@ Built for [Magistrala](https://github.com/absmach/magistrala) IoT platform, but 
 
 ---
 
+## Access model in simple words
+
+Atom decides access with four simple ideas:
+
+| Atom word | Simple meaning | Example |
+|-----------|----------------|---------|
+| Capability | One permission key | `read`, `write`, `delete`, `role.manage`, `policy.manage` |
+| Role | A keychain with many capability keys | `tenant-admin` contains `read`, `write`, `delete`, `role.manage`, `policy.manage` |
+| Policy | The assignment that gives a role or capability to someone | `user1` gets `tenant-admin` |
+| Scope | Where that access works | whole platform, one tenant/domain, or one object |
+
+Read a policy as one sentence:
+
+```text
+Give <who> this <role/capability> on this <scope>.
+```
+
+Example:
+
+```text
+Give user1 the tenant-admin role on domain d1.
+```
+
+That means:
+
+```text
+user1 can use the tenant-admin capabilities inside domain d1.
+```
+
+Roles can have the same name in different tenants, but they are still separate roles.
+
+Example:
+
+```text
+Tenant d1 has tenant-admin role with role ID role-a.
+Tenant d2 has tenant-admin role with role ID role-b.
+```
+
+Changing capabilities on `role-a` affects only tenant `d1`. It does not change `role-b` in tenant `d2`.
+
+So `tenant-admin` is not one global shared role. Each tenant gets its own tenant-scoped `tenant-admin` role.
+
+Scope decides how wide the access is:
+
+- `platform` means the whole Atom system.
+- `tenant` means one tenant/domain.
+- `object` means one exact object, such as one client, channel, group, rule, alarm, or report.
+
+Short version:
+
+```text
+Capability = permission
+Role       = group of permissions
+Policy     = gives access to user/group
+Scope      = where access applies
+```
+
+---
+
 ## Quick start
 
 ```bash
@@ -32,35 +91,35 @@ docker-compose up postgres -d
 # 3. Run (migrations apply automatically on startup)
 cargo run
 
-# or with Docker
+# or with Docker (release image on :8080)
 docker compose up --build atom
 
 # or with the dev image on :8081
 docker compose --profile dev up --build atom-dev
+
+# or with the optional Next UI on :3005
+docker compose --profile atom-ui up -d --build
 ```
 
 The service starts on `http://localhost:8080`.
 
 GraphQL is available at `POST /graphql` in both images. GraphQL uses the same Bearer token authentication as REST.
 
-The admin UI lives in the Next.js app under `app/`. For local UI development, run the backend and frontend separately:
+The Atom Next UI is a separate optional service. In Docker Compose it is enabled with the `atom-ui` profile and is available at `http://localhost:3005`.
+
+For local UI development, run the backend and frontend separately:
 
 ```bash
 # backend on http://localhost:8080
 cargo run
 
-# UI on http://localhost:3000
+# Next UI on http://localhost:3000
 cd app
 pnpm install
 pnpm dev
 ```
 
-When using the dev Docker backend on `http://localhost:8081`, point the UI proxy at that port:
-
-```bash
-cd app
-ATOM_GRAPHQL_URL=http://localhost:8081/graphql pnpm dev
-```
+When using the dev Docker backend on `http://localhost:8081`, set `ATOM_GRAPHQL_URL=http://localhost:8081/graphql` for the Next UI.
 
 If a host port is already occupied, override only the host-side port:
 
@@ -104,7 +163,7 @@ can run an inline `createEntity` GraphQL operation with a variables mapping such
 
 Custom API endpoints do not inspect raw Postgres tables, do not change REST or GraphQL semantics, and do not add external-system aliases. Every execution is audited with redacted request/response summaries. Paths must stay under `/api/custom/`, request bodies are size-limited and JSON-schema validated when a request schema is configured, and active method/path duplicates are rejected.
 
-The Next.js playground includes starter operations, schema introspection search, variables, response viewing, and copyable curl/fetch snippets.
+The Atom Next UI includes admin workflows for tenants, entities, groups, resources, roles, policies, audit, authz debugging, and custom API endpoints. The GraphQL playground includes starter operations, schema introspection search, variables, response viewing, and copyable curl/fetch snippets.
 
 The GraphQL schema covers health, login/logout/session lookup, tenants, profiles, profile versions, entities, resources, groups, credentials, ownerships, roles, capabilities, policies, authz checks, audit logs, and profile-driven entity creation. REST remains available and unchanged.
 
@@ -224,9 +283,9 @@ Generic application mapping:
 | `ATOM_SIGNUP_ENABLED` | `false`                              | Enables unauthenticated global human signup |
 | `ATOM_DEV_ALLOW_UNVERIFIED_EMAIL_LOGIN` | `false`           | Development-only password login before email verification |
 | `ATOM_PUBLIC_BASE_URL` | `http://localhost:8080`             | Public URL used for email verification and OAuth callbacks |
-| `ATOM_EMAIL_VERIFICATION_REDIRECT` | `/verify-email` | Frontend URL that verifies email tokens |
-| `ATOM_OAUTH_SUCCESS_REDIRECT` | `/callback` | Frontend URL that receives the OAuth exchange code |
-| `ATOM_OAUTH_ERROR_REDIRECT` | `/callback` | Frontend URL that receives OAuth errors |
+| `ATOM_EMAIL_VERIFICATION_REDIRECT` | `/auth/email/verify` | URL that verifies email tokens |
+| `ATOM_OAUTH_SUCCESS_REDIRECT` | `/auth/callback` | Frontend URL that receives the OAuth exchange code |
+| `ATOM_OAUTH_ERROR_REDIRECT` | `/auth/callback` | Frontend URL that receives OAuth errors |
 | `ATOM_OIDC_PROVIDERS` | `[]`                                 | JSON array of OIDC providers, for example Google |
 | `ATOM_SMTP_HOST` / `ATOM_SMTP_FROM` | *(optional)*          | SMTP settings for signup verification email |
 | `RUST_LOG`       | `info`                                     | Log level filter                |
@@ -265,7 +324,7 @@ curl -s -X POST http://localhost:8080/auth/signup \
 ```
 
 ```bash
-curl -s 'http://localhost:3005/verify-email?token=atomv_...'
+curl -s 'http://localhost:8080/auth/email/verify?token=atomv_...'
 
 curl -s -X POST http://localhost:8080/auth/email/resend \
   -H 'Content-Type: application/json' \

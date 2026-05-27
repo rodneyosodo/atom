@@ -71,6 +71,16 @@ pub enum ScopeKind {
     ObjectType,
     /// Matches a single object whose UUID (as text) equals `scope_ref`.
     Object,
+    /// Matches objects of a namespaced type whose direct parent group equals
+    /// the UUID embedded in `scope_ref`.
+    GroupObjectType,
+    /// Matches objects of a namespaced type whose direct parent group is the
+    /// UUID embedded in `scope_ref`, or any descendant of that group.
+    GroupTreeObjectType,
+    /// Matches direct child groups of the group UUID embedded in `scope_ref`.
+    GroupChildKind,
+    /// Matches descendant groups of the group UUID embedded in `scope_ref`.
+    GroupDescendantKind,
 }
 
 /// Canonical set of protected object kinds. Used for `object_kind` columns in

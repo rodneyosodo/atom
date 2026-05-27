@@ -110,6 +110,9 @@ mod tests {
             ("GET", "/admin/orphan-policies"),
             ("GET", "/admin/unprotected-resources"),
             ("GET", "/admin/expiring-credentials"),
+            ("GET", "/graphql/console"),
+            ("GET", "/graphql/console/groups"),
+            ("GET", "/graphql/playground"),
         ] {
             let response = app
                 .clone()
@@ -224,9 +227,9 @@ mod tests {
             dev_allow_unverified_email_login: false,
             public_base_url: "http://localhost:8080".into(),
             cors_allowed_origins: vec!["http://localhost:8080".into()],
-            email_verification_redirect: "http://localhost:3005/verify-email".into(),
-            password_reset_redirect: "http://localhost:3005/reset-password".into(),
-            invitation_redirect: "http://localhost:3005/invitations/accept".into(),
+            email_verification_redirect: "http://localhost:8080/auth/email/verify".into(),
+            password_reset_redirect: "http://localhost:8080/reset-password".into(),
+            invitation_redirect: "http://localhost:8080/invitations/accept".into(),
             oauth_success_redirect: "http://localhost:8080".into(),
             oauth_error_redirect: "http://localhost:8080".into(),
             oidc_providers: vec![],

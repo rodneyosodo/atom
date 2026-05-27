@@ -43,6 +43,10 @@ pub struct CreatePolicyBinding {
     /// - `object_kind`: coarse kind name (e.g., `resource`, `entity`, `tenant`).
     /// - `object_type`: namespaced sub-kind (e.g., `resource:channel`, `entity:device`).
     /// - `object`: object UUID as text.
+    /// - `group_object_type`: `<group UUID>:<kind>:<sub-kind>`.
+    /// - `group_tree_object_type`: `<group UUID>:<kind>:<sub-kind>`.
+    /// - `group_child_kind`: `<group UUID>:group`.
+    /// - `group_descendant_kind`: `<group UUID>:group`.
     pub scope_ref: Option<String>,
     pub effect: Effect,
     pub conditions: Value,
@@ -74,7 +78,7 @@ impl<'de> Deserialize<'de> for CreatePolicyBinding {
             serde_json::from_value(serde_json::Value::String(canonical_kind.clone()))
                 .map_err(|_| {
                     serde::de::Error::custom(format!(
-                        "invalid scope_kind '{canonical_kind}' (expected one of platform, tenant, object_kind, object_type, object)"
+                        "invalid scope_kind '{canonical_kind}' (expected one of platform, tenant, object_kind, object_type, object, group_object_type, group_tree_object_type, group_child_kind, group_descendant_kind)"
                     ))
                 })?;
 
@@ -120,7 +124,49 @@ impl CreatePolicyBinding {
                 Some(_) => Ok(()),
                 None => Err("object scope requires scope_ref (object UUID)".to_string()),
             },
+            ScopeKind::GroupObjectType | ScopeKind::GroupTreeObjectType => match &self.scope_ref {
+                Some(r) => validate_group_object_type_scope_ref(r),
+                None => Err("group object type scope requires scope_ref".to_string()),
+            },
+            ScopeKind::GroupChildKind | ScopeKind::GroupDescendantKind => match &self.scope_ref {
+                Some(r) => validate_group_kind_scope_ref(r),
+                None => Err("group kind scope requires scope_ref".to_string()),
+            },
         }
+    }
+}
+
+fn validate_group_object_type_scope_ref(scope_ref: &str) -> Result<(), String> {
+    let (group_id, object_type) = scope_ref.split_once(':').ok_or_else(|| {
+        format!(
+            "group object type scope_ref must be '<group UUID>:<kind>:<sub-kind>', got '{scope_ref}'"
+        )
+    })?;
+    group_id
+        .parse::<Uuid>()
+        .map_err(|_| format!("group object type scope_ref has invalid group UUID '{group_id}'"))?;
+    if object_type.split_once(':').is_some() {
+        Ok(())
+    } else {
+        Err(format!(
+            "group object type scope_ref must include a namespaced object type, got '{scope_ref}'"
+        ))
+    }
+}
+
+fn validate_group_kind_scope_ref(scope_ref: &str) -> Result<(), String> {
+    let (group_id, kind) = scope_ref.split_once(':').ok_or_else(|| {
+        format!("group kind scope_ref must be '<group UUID>:group', got '{scope_ref}'")
+    })?;
+    group_id
+        .parse::<Uuid>()
+        .map_err(|_| format!("group kind scope_ref has invalid group UUID '{group_id}'"))?;
+    if kind == "group" {
+        Ok(())
+    } else {
+        Err(format!(
+            "group kind scope_ref must end with ':group', got '{scope_ref}'"
+        ))
     }
 }
 

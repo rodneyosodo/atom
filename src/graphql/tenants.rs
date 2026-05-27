@@ -105,6 +105,49 @@ impl TenantQuery {
         })
     }
 
+    async fn tenant_assignable_entities(
+        &self,
+        ctx: &Context<'_>,
+        tenant_id: ID,
+        q: String,
+        limit: Option<i32>,
+        offset: Option<i32>,
+    ) -> Result<EntityList> {
+        let auth = require_auth(ctx)?;
+        let state = ctx.data::<AppState>()?;
+        let tenant_id = parse_id(tenant_id, "tenantId")?;
+        let q = q.trim().to_string();
+        if q.len() < 3 {
+            return Err(gql_error(crate::error::AppError::bad_request(
+                "q must contain at least 3 characters",
+            )));
+        }
+        require_any_capability(
+            &state.pool,
+            auth.entity_id,
+            &[
+                ("manage", Scope::Tenant(tenant_id)),
+                ("role.manage", Scope::Tenant(tenant_id)),
+                ("policy.manage", Scope::Tenant(tenant_id)),
+            ],
+        )
+        .await?;
+        let list = tenant_repo::list_tenant_assignable_entities(
+            &state.pool,
+            tenant_id,
+            q,
+            limit.map(i64::from).unwrap_or(20),
+            offset.map(i64::from).unwrap_or(0),
+        )
+        .await
+        .map_err(gql_error)?;
+
+        Ok(EntityList {
+            items: list.items.into_iter().map(Into::into).collect(),
+            total: list.total,
+        })
+    }
+
     async fn tenant_invitations(
         &self,
         ctx: &Context<'_>,
@@ -401,6 +444,30 @@ impl TenantMutation {
         )
         .await
         .map_err(gql_error)?;
+        Ok(true)
+    }
+
+    async fn remove_tenant_member(
+        &self,
+        ctx: &Context<'_>,
+        tenant_id: ID,
+        entity_id: ID,
+    ) -> Result<bool> {
+        let auth = require_auth(ctx)?;
+        let state = ctx.data::<AppState>()?;
+        let tenant_id = parse_id(tenant_id, "tenantId")?;
+        require_any_capability(
+            &state.pool,
+            auth.entity_id,
+            &[
+                ("manage", Scope::Tenant(tenant_id)),
+                ("policy.manage", Scope::Tenant(tenant_id)),
+            ],
+        )
+        .await?;
+        tenant_repo::remove_tenant_member(&state.pool, tenant_id, parse_id(entity_id, "entityId")?)
+            .await
+            .map_err(gql_error)?;
         Ok(true)
     }
 }

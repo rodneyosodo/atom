@@ -34,7 +34,7 @@ pub struct TenantAdminBootstrap {
     pub tenant_id: Uuid,
     pub creator_id: Uuid,
     pub role_name: &'static str,
-    pub capabilities: [&'static str; 5],
+    pub capabilities: [&'static str; 12],
     pub scope_ref: String,
 }
 
@@ -53,6 +53,13 @@ pub fn tenant_admin_bootstrap(tenant_id: Uuid, creator_id: Uuid) -> TenantAdminB
         role_name: "tenant-admin",
         capabilities: [
             "manage",
+            "list",
+            "read",
+            "write",
+            "delete",
+            "publish",
+            "subscribe",
+            "execute",
             "audit.read",
             "credential.manage",
             "policy.manage",
@@ -126,7 +133,6 @@ async fn bootstrap_tenant_admin(
            SELECT $1, c.id
            FROM capabilities c
            WHERE c.name = ANY($2::text[])
-             AND c.resource_kind IS NULL
            ON CONFLICT DO NOTHING"#,
     )
     .bind(role_id)
@@ -135,15 +141,25 @@ async fn bootstrap_tenant_admin(
     .await
     .map_err(db_err)?;
 
-    let linked_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM role_capabilities WHERE role_id = $1")
-            .bind(role_id)
-            .fetch_one(&mut **tx)
-            .await
-            .map_err(db_err)?;
-    if linked_count != plan.capabilities.len() as i64 {
+    let missing_names: Vec<String> = sqlx::query_scalar(
+        r#"SELECT required.name
+           FROM unnest($1::text[]) AS required(name)
+           WHERE NOT EXISTS (
+               SELECT 1 FROM role_capabilities rc
+               JOIN capabilities c ON c.id = rc.capability_id
+               WHERE rc.role_id = $2 AND c.name = required.name
+           )
+           ORDER BY required.name"#,
+    )
+    .bind(plan.capabilities.as_slice())
+    .bind(role_id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(db_err)?;
+    if !missing_names.is_empty() {
         return Err(AppError::Internal(anyhow::anyhow!(
-            "tenant-admin bootstrap missing seeded capabilities"
+            "tenant-admin bootstrap missing seeded capabilities: {}",
+            missing_names.join(", ")
         )));
     }
 
@@ -678,6 +694,116 @@ pub async fn list_tenant_members(
     Ok(EntityList { items, total })
 }
 
+pub async fn list_tenant_assignable_entities(
+    pool: &PgPool,
+    tenant_id: Uuid,
+    q: String,
+    limit: i64,
+    offset: i64,
+) -> Result<EntityList, AppError> {
+    let limit = limit.clamp(1, 20);
+    let offset = offset.max(0);
+    let q = search_pattern(Some(q));
+
+    let items = sqlx::query_as::<_, Entity>(
+        r#"SELECT e.id, e.kind, e.name, e.tenant_id, e.profile_id, e.profile_version_id,
+                  e.status, e.attributes, e.created_at, e.updated_at
+           FROM entities e
+           WHERE e.kind = 'human'
+             AND e.status = 'active'
+             AND ($2::text IS NULL OR e.name ILIKE $2 OR e.attributes::text ILIKE $2)
+             AND NOT EXISTS (
+                 SELECT 1
+                 FROM tenant_memberships tm
+                 WHERE tm.tenant_id = $1
+                   AND tm.entity_id = e.id
+                   AND tm.status = 'active'
+             )
+           ORDER BY e.created_at DESC
+           LIMIT $3 OFFSET $4"#,
+    )
+    .bind(tenant_id)
+    .bind(q.clone())
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)?;
+
+    let total: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*)
+           FROM entities e
+           WHERE e.kind = 'human'
+             AND e.status = 'active'
+             AND ($2::text IS NULL OR e.name ILIKE $2 OR e.attributes::text ILIKE $2)
+             AND NOT EXISTS (
+                 SELECT 1
+                 FROM tenant_memberships tm
+                 WHERE tm.tenant_id = $1
+                   AND tm.entity_id = e.id
+                   AND tm.status = 'active'
+             )"#,
+    )
+    .bind(tenant_id)
+    .bind(q)
+    .fetch_one(pool)
+    .await
+    .map_err(db_err)?;
+
+    Ok(EntityList { items, total })
+}
+
+pub async fn remove_tenant_member(
+    pool: &PgPool,
+    tenant_id: Uuid,
+    entity_id: Uuid,
+) -> Result<(), AppError> {
+    let mut tx = pool.begin().await.map_err(db_err)?;
+
+    sqlx::query(
+        r#"DELETE FROM group_members gm
+           USING groups g
+           WHERE gm.group_id = g.id
+             AND g.tenant_id = $1
+             AND gm.entity_id = $2"#,
+    )
+    .bind(tenant_id)
+    .bind(entity_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(db_err)?;
+
+    sqlx::query(
+        r#"DELETE FROM policy_bindings
+           WHERE tenant_id = $1
+             AND subject_kind = 'entity'
+             AND subject_id = $2"#,
+    )
+    .bind(tenant_id)
+    .bind(entity_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(db_err)?;
+
+    let result = sqlx::query(
+        r#"DELETE FROM tenant_memberships
+           WHERE tenant_id = $1
+             AND entity_id = $2"#,
+    )
+    .bind(tenant_id)
+    .bind(entity_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(db_err)?;
+
+    if result.rows_affected() == 0 {
+        return Err(AppError::not_found("tenant member not found"));
+    }
+
+    tx.commit().await.map_err(db_err)?;
+    Ok(())
+}
+
 pub async fn list_tenant_role_actions(
     pool: &PgPool,
     tenant_id: Uuid,
@@ -1076,6 +1202,13 @@ mod tests {
             plan.capabilities,
             [
                 "manage",
+                "list",
+                "read",
+                "write",
+                "delete",
+                "publish",
+                "subscribe",
+                "execute",
                 "audit.read",
                 "credential.manage",
                 "policy.manage",

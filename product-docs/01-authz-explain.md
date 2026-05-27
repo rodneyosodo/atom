@@ -1,5 +1,7 @@
 # POST /authz/explain
 
+> Legacy draft note: this document still uses the old policy/scope terminology. The authoritative product model is now [Atom access model](./11-access-model-simplification.md). Update this endpoint contract before implementation so it explains role permission blocks, assignments, Object Groups, and Principal Groups instead of `scope_kind` / `scope_ref`.
+
 ## Priority: 1 (Must-have)
 
 ---

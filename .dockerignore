@@ -5,9 +5,10 @@ docs/node_modules
 docs/.next
 docs/out
 docs/dist
-console/node_modules
-console/.astro
-console/dist
+app/node_modules
+app/.next
+app/test-results
+app/tsconfig.tsbuildinfo
 *.log
 .env
 .env.*

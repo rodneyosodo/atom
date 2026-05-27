@@ -78,7 +78,17 @@ mod tests {
 
     #[test]
     fn canonical_values_pass_through_unchanged() {
-        for canonical in ["platform", "tenant", "object_kind", "object_type", "object"] {
+        for canonical in [
+            "platform",
+            "tenant",
+            "object_kind",
+            "object_type",
+            "object",
+            "group_object_type",
+            "group_tree_object_type",
+            "group_child_kind",
+            "group_descendant_kind",
+        ] {
             let (k, r) = translate_legacy_scope(canonical, Some("x".into()));
             assert_eq!(k, canonical);
             assert_eq!(r, Some("x".to_string()));

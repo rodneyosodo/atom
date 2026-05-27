@@ -48,6 +48,8 @@ pub(crate) struct ProtectedObject {
     pub name: Option<String>,
     pub tenant_id: Option<Uuid>,
     pub attributes: Value,
+    pub parent_group_id: Option<Uuid>,
+    pub ancestor_group_ids: Vec<Uuid>,
 }
 
 /// Resolve the protected object identified by an authz request.
@@ -74,6 +76,8 @@ pub(crate) async fn resolve_object(
             name: Some("platform".to_string()),
             tenant_id: None,
             attributes: Value::Object(Default::default()),
+            parent_group_id: None,
+            ancestor_group_ids: Vec::new(),
         }));
     }
 
@@ -105,6 +109,8 @@ pub(crate) async fn resolve_object(
                     attributes: r
                         .try_get::<Value, _>("attributes")
                         .unwrap_or(Value::Object(Default::default())),
+                    parent_group_id: None,
+                    ancestor_group_ids: Vec::new(),
                 }))
             }
             "entity" => load_entity_as_object(pool, id).await,
@@ -131,45 +137,76 @@ async fn load_entity_as_object(
 ) -> Result<Option<ProtectedObject>, AppError> {
     use sqlx::Row;
     let row = sqlx::query(
-        "SELECT id, kind, name, tenant_id, attributes FROM entities WHERE id = $1 AND status <> 'inactive'",
+        r#"SELECT e.id, e.kind, e.name, e.tenant_id, e.attributes, gep.group_id AS parent_group_id
+           FROM entities e
+           LEFT JOIN group_entity_parents gep ON gep.entity_id = e.id
+           WHERE e.id = $1 AND e.status <> 'inactive'"#,
     )
     .bind(id)
     .fetch_optional(pool)
     .await
     .map_err(AppError::Database)?;
-    Ok(row.map(|r| ProtectedObject {
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let parent_group_id = row
+        .try_get::<Option<Uuid>, _>("parent_group_id")
+        .unwrap_or(None);
+    let ancestor_group_ids = match parent_group_id {
+        Some(parent_group_id) => group_ancestor_ids(pool, parent_group_id).await?,
+        None => Vec::new(),
+    };
+    Ok(Some(ProtectedObject {
         id,
         coarse_kind: "entity".to_string(),
-        kind: r
+        kind: row
             .try_get::<String, _>("kind")
             .unwrap_or_else(|_| String::new()),
-        name: r.try_get::<String, _>("name").ok(),
-        tenant_id: r.try_get::<Option<Uuid>, _>("tenant_id").unwrap_or(None),
-        attributes: r
+        name: row.try_get::<String, _>("name").ok(),
+        tenant_id: row.try_get::<Option<Uuid>, _>("tenant_id").unwrap_or(None),
+        attributes: row
             .try_get::<Value, _>("attributes")
             .unwrap_or(Value::Object(Default::default())),
+        parent_group_id,
+        ancestor_group_ids,
     }))
 }
 
 async fn load_resource(pool: &PgPool, id: Uuid) -> Result<Option<ProtectedObject>, AppError> {
     use sqlx::Row;
-    let row =
-        sqlx::query("SELECT id, kind, name, tenant_id, attributes FROM resources WHERE id = $1")
-            .bind(id)
-            .fetch_optional(pool)
-            .await
-            .map_err(AppError::Database)?;
-    Ok(row.map(|r| ProtectedObject {
+    let row = sqlx::query(
+        r#"SELECT r.id, r.kind, r.name, r.tenant_id, r.attributes, grp.group_id AS parent_group_id
+           FROM resources r
+           LEFT JOIN group_resource_parents grp ON grp.resource_id = r.id
+           WHERE r.id = $1"#,
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(AppError::Database)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let parent_group_id = row
+        .try_get::<Option<Uuid>, _>("parent_group_id")
+        .unwrap_or(None);
+    let ancestor_group_ids = match parent_group_id {
+        Some(parent_group_id) => group_ancestor_ids(pool, parent_group_id).await?,
+        None => Vec::new(),
+    };
+    Ok(Some(ProtectedObject {
         id,
         coarse_kind: "resource".to_string(),
-        kind: r
+        kind: row
             .try_get::<String, _>("kind")
             .unwrap_or_else(|_| String::new()),
-        name: r.try_get::<Option<String>, _>("name").unwrap_or(None),
-        tenant_id: r.try_get::<Option<Uuid>, _>("tenant_id").unwrap_or(None),
-        attributes: r
+        name: row.try_get::<Option<String>, _>("name").unwrap_or(None),
+        tenant_id: row.try_get::<Option<Uuid>, _>("tenant_id").unwrap_or(None),
+        attributes: row
             .try_get::<Value, _>("attributes")
             .unwrap_or(Value::Object(Default::default())),
+        parent_group_id,
+        ancestor_group_ids,
     }))
 }
 
@@ -179,22 +216,54 @@ async fn load_group_as_object(
 ) -> Result<Option<ProtectedObject>, AppError> {
     use sqlx::Row;
     let row = sqlx::query(
-        "SELECT id, name, tenant_id, attributes FROM groups WHERE id = $1 AND status <> 'inactive'",
+        r#"SELECT g.id, g.name, g.tenant_id, g.attributes, gh.parent_id AS parent_group_id
+           FROM groups g
+           LEFT JOIN group_hierarchy gh ON gh.child_id = g.id
+           WHERE g.id = $1 AND g.status <> 'inactive'"#,
     )
     .bind(id)
     .fetch_optional(pool)
     .await
     .map_err(AppError::Database)?;
-    Ok(row.map(|r| ProtectedObject {
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let parent_group_id = row
+        .try_get::<Option<Uuid>, _>("parent_group_id")
+        .unwrap_or(None);
+    let ancestor_group_ids = match parent_group_id {
+        Some(parent_group_id) => group_ancestor_ids(pool, parent_group_id).await?,
+        None => Vec::new(),
+    };
+    Ok(Some(ProtectedObject {
         id,
         coarse_kind: "group".to_string(),
         kind: "group".to_string(),
-        name: r.try_get::<String, _>("name").ok(),
-        tenant_id: r.try_get::<Option<Uuid>, _>("tenant_id").unwrap_or(None),
-        attributes: r
+        name: row.try_get::<String, _>("name").ok(),
+        tenant_id: row.try_get::<Option<Uuid>, _>("tenant_id").unwrap_or(None),
+        attributes: row
             .try_get::<Value, _>("attributes")
             .unwrap_or(Value::Object(Default::default())),
+        parent_group_id,
+        ancestor_group_ids,
     }))
+}
+
+async fn group_ancestor_ids(pool: &PgPool, group_id: Uuid) -> Result<Vec<Uuid>, AppError> {
+    sqlx::query_scalar(
+        r#"WITH RECURSIVE ancestors(id) AS (
+               SELECT parent_id FROM group_hierarchy WHERE child_id = $1
+               UNION ALL
+               SELECT gh.parent_id
+               FROM group_hierarchy gh
+               JOIN ancestors a ON gh.child_id = a.id
+           )
+           SELECT id FROM ancestors"#,
+    )
+    .bind(group_id)
+    .fetch_all(pool)
+    .await
+    .map_err(AppError::Database)
 }
 
 pub async fn evaluate(pool: &PgPool, req: &AuthzRequest) -> Result<AuthzResponse, AppError> {
@@ -239,16 +308,19 @@ pub async fn evaluate(pool: &PgPool, req: &AuthzRequest) -> Result<AuthzResponse
         return Ok(deny);
     }
 
-    let cap_id = repo::find_capability_by_name(pool, &req.action, &object.kind).await?;
-    let cap_id = match cap_id {
-        Some(id) => id,
-        None => {
-            return Ok(AuthzResponse::deny(format!(
-                "unknown action '{}'",
-                req.action
-            )))
-        }
-    };
+    let cap_ids =
+        repo::find_capability_ids_by_name(pool, &req.action, &object.coarse_kind, &object.kind)
+            .await?;
+    if cap_ids.is_empty() {
+        return Ok(AuthzResponse::deny(format!(
+            "unknown action '{}'",
+            req.action
+        )));
+    }
+    let cap_id_set = cap_ids
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
 
     let tenant_ctx = load_tenant_context(pool, object.tenant_id).await?;
     let eval_ctx = build_context(&entity_ctx, &object, tenant_ctx.as_ref(), &req.context);
@@ -263,28 +335,43 @@ pub async fn evaluate(pool: &PgPool, req: &AuthzRequest) -> Result<AuthzResponse
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
         .collect();
-    let role_caps = repo::capability_ids_for_roles(pool, &role_ids).await?;
+    let role_grants = repo::expanded_role_grants_for_roles(pool, &role_ids).await?;
 
     let object_id_str = object.id.to_string();
     let object_tenant_id_str = object.tenant_id.map(|t| t.to_string());
     let mut has_allow = false;
 
     for binding in &bindings {
-        if !scope_matches(
+        if !scope_matches_with_groups(
             binding,
             &object_id_str,
             &object.coarse_kind,
             &object.kind,
             object_tenant_id_str.as_deref(),
+            object.parent_group_id,
+            &object.ancestor_group_ids,
         ) {
             continue;
         }
 
         let grant_matches = match binding.grant_kind {
-            GrantKind::Capability => binding.grant_id == cap_id,
-            GrantKind::Role => role_caps
+            GrantKind::Capability => cap_id_set.contains(&binding.grant_id),
+            GrantKind::Role => role_grants
                 .get(&binding.grant_id)
-                .map(|caps| caps.contains(&cap_id))
+                .map(|grants| {
+                    grants.iter().any(|grant| {
+                        cap_id_set.contains(&grant.capability_id)
+                            && role_scope_matches(
+                                grant,
+                                &object_id_str,
+                                &object.coarse_kind,
+                                &object.kind,
+                                object_tenant_id_str.as_deref(),
+                                object.parent_group_id,
+                                &object.ancestor_group_ids,
+                            )
+                    })
+                })
                 .unwrap_or(false),
         };
 
@@ -409,31 +496,41 @@ pub async fn explain(pool: &PgPool, req: &AuthzRequest) -> Result<AuthzExplainRe
         });
     }
 
-    let cap_row = sqlx::query(
-        r#"SELECT id, name, resource_kind FROM capabilities
-           WHERE name = $1 AND (resource_kind IS NULL OR resource_kind = $2)
-           ORDER BY resource_kind NULLS LAST
-           LIMIT 1"#,
+    let cap_rows = sqlx::query(
+        r#"SELECT c.id, c.name, c.resource_kind
+           FROM capabilities c
+           JOIN capability_applicability ca ON ca.capability_id = c.id
+           WHERE c.name = $1
+             AND ca.object_kind = $2
+             AND (ca.object_type IS NULL OR ca.object_type = $3)
+           ORDER BY c.resource_kind NULLS LAST, c.id"#,
     )
     .bind(&req.action)
-    .bind(&resource.kind)
-    .fetch_optional(pool)
+    .bind(&object.coarse_kind)
+    .bind(format!("{}:{}", object.coarse_kind, object.kind))
+    .fetch_all(pool)
     .await
     .map_err(AppError::Database)?;
-    let cap_row = match cap_row {
-        Some(row) => row,
-        None => {
-            return Ok(AuthzExplainResponse {
-                allowed: false,
-                reason: format!("unknown action '{}'", req.action),
-                subject: Some(subject),
-                resource: Some(resource),
-                capability: None,
-                matched_binding: None,
-                evaluated_bindings: Vec::new(),
-            });
-        }
-    };
+    if cap_rows.is_empty() {
+        return Ok(AuthzExplainResponse {
+            allowed: false,
+            reason: format!("unknown action '{}'", req.action),
+            subject: Some(subject),
+            resource: Some(resource),
+            capability: None,
+            matched_binding: None,
+            evaluated_bindings: Vec::new(),
+        });
+    }
+    let capability_ids = cap_rows
+        .iter()
+        .map(|row| row.try_get("id").map_err(AppError::Database))
+        .collect::<Result<Vec<Uuid>, AppError>>()?;
+    let capability_id_set = capability_ids
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    let cap_row = &cap_rows[0];
     let capability = ExplainCapability {
         id: cap_row.try_get("id").map_err(AppError::Database)?,
         name: cap_row.try_get("name").map_err(AppError::Database)?,
@@ -443,25 +540,31 @@ pub async fn explain(pool: &PgPool, req: &AuthzRequest) -> Result<AuthzExplainRe
     };
 
     let rows = sqlx::query(
-        r#"SELECT pb.id, pb.tenant_id, pb.subject_kind, pb.subject_id, pb.grant_kind, pb.grant_id,
+        r#"WITH RECURSIVE group_paths(group_id, path) AS (
+               SELECT gm.group_id, g.name
+               FROM group_members gm
+               JOIN groups g ON g.id = gm.group_id AND g.status = 'active'
+               WHERE gm.entity_id = $1
+               UNION ALL
+               SELECT gh.parent_id, parent.name || ' -> ' || gp.path
+               FROM group_hierarchy gh
+               JOIN group_paths gp ON gp.group_id = gh.child_id
+               JOIN groups parent ON parent.id = gh.parent_id AND parent.status = 'active'
+           )
+           SELECT pb.id, pb.tenant_id, pb.subject_kind, pb.subject_id, pb.grant_kind, pb.grant_id,
                   pb.scope_kind, pb.scope_ref, pb.effect, pb.conditions, pb.created_at,
                   role.name AS role_name,
                   CASE
                     WHEN pb.subject_kind = 'entity' THEN 'direct'
-                    ELSE 'group:' || g.name
+                    ELSE 'group:' || gp.path
                   END AS via
            FROM policy_bindings pb
-           LEFT JOIN groups g ON pb.subject_kind = 'group' AND g.id = pb.subject_id AND g.status = 'active'
+           LEFT JOIN group_paths gp ON pb.subject_kind = 'group' AND gp.group_id = pb.subject_id
            LEFT JOIN roles role ON pb.grant_kind = 'role' AND role.id = pb.grant_id
            WHERE
              (pb.subject_kind = 'entity' AND pb.subject_id = $1)
              OR
-             (pb.subject_kind = 'group' AND pb.subject_id IN (
-               SELECT gm.group_id
-               FROM group_members gm
-               JOIN groups g ON g.id = gm.group_id AND g.status = 'active'
-               WHERE gm.entity_id = $1
-             ))
+             (pb.subject_kind = 'group' AND gp.group_id IS NOT NULL)
            ORDER BY pb.created_at ASC"#,
     )
     .bind(req.subject_id)
@@ -501,7 +604,7 @@ pub async fn explain(pool: &PgPool, req: &AuthzRequest) -> Result<AuthzExplainRe
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
         .collect();
-    let role_caps = repo::capability_ids_for_roles(pool, &role_ids).await?;
+    let role_grants = repo::expanded_role_grants_for_roles(pool, &role_ids).await?;
 
     let eval_ctx = build_context(&entity_ctx, &object, tenant_ctx.as_ref(), &req.context);
     let object_id_str = object.id.to_string();
@@ -512,22 +615,40 @@ pub async fn explain(pool: &PgPool, req: &AuthzRequest) -> Result<AuthzExplainRe
     for (binding, role_name, via) in bindings {
         let mut result = "skipped".to_string();
         let mut skip_reason = None;
-        if !scope_matches(
+        let mut role_path = None;
+        if !scope_matches_with_groups(
             &binding,
             &object_id_str,
             &object.coarse_kind,
             &resource.kind,
             object_tenant_id_str.as_deref(),
+            object.parent_group_id,
+            &object.ancestor_group_ids,
         ) {
             skip_reason = Some("scope_mismatch".to_string());
         } else {
-            let grant_matches = match binding.grant_kind {
-                GrantKind::Capability => binding.grant_id == capability.id,
-                GrantKind::Role => role_caps
-                    .get(&binding.grant_id)
-                    .map(|caps| caps.contains(&capability.id))
-                    .unwrap_or(false),
+            let matched_role_grant = match binding.grant_kind {
+                GrantKind::Capability => None,
+                GrantKind::Role => role_grants.get(&binding.grant_id).and_then(|grants| {
+                    grants.iter().find(|grant| {
+                        capability_id_set.contains(&grant.capability_id)
+                            && role_scope_matches(
+                                grant,
+                                &object_id_str,
+                                &object.coarse_kind,
+                                &resource.kind,
+                                object_tenant_id_str.as_deref(),
+                                object.parent_group_id,
+                                &object.ancestor_group_ids,
+                            )
+                    })
+                }),
             };
+            let grant_matches = match binding.grant_kind {
+                GrantKind::Capability => capability_id_set.contains(&binding.grant_id),
+                GrantKind::Role => matched_role_grant.is_some(),
+            };
+            role_path = matched_role_grant.map(|grant| grant.role_path.clone());
             if !grant_matches {
                 skip_reason = Some("grant_mismatch".to_string());
             } else if !conditions_match(&binding.conditions, &eval_ctx) {
@@ -543,6 +664,7 @@ pub async fn explain(pool: &PgPool, req: &AuthzRequest) -> Result<AuthzExplainRe
             grant_kind: binding.grant_kind.clone(),
             grant_id: binding.grant_id,
             role_name,
+            role_path,
             scope_kind: binding.scope_kind,
             scope_ref: binding.scope_ref,
             conditions: binding.conditions,
@@ -684,6 +806,7 @@ fn object_not_found_reason(req: &AuthzRequest) -> String {
 /// - `ObjectType`: scope_ref is namespaced (`"<coarse>:<sub>"`) and must match
 ///   both halves.
 /// - `Object`: scope_ref equals the object's UUID as text.
+#[cfg(test)]
 fn scope_matches(
     binding: &PolicyBinding,
     object_id: &str,
@@ -691,35 +814,158 @@ fn scope_matches(
     sub_kind: &str,
     object_tenant_id: Option<&str>,
 ) -> bool {
+    scope_matches_with_groups(
+        binding,
+        object_id,
+        coarse_kind,
+        sub_kind,
+        object_tenant_id,
+        None,
+        &[],
+    )
+}
+
+fn scope_matches_with_groups(
+    binding: &PolicyBinding,
+    object_id: &str,
+    coarse_kind: &str,
+    sub_kind: &str,
+    object_tenant_id: Option<&str>,
+    parent_group_id: Option<Uuid>,
+    ancestor_group_ids: &[Uuid],
+) -> bool {
     if let Some(policy_tenant_id) = binding.tenant_id {
         if object_tenant_id.and_then(|id| id.parse::<Uuid>().ok()) != Some(policy_tenant_id) {
             return false;
         }
     }
 
-    match binding.scope_kind {
+    let target = ScopeMatchObject {
+        object_id,
+        coarse_kind,
+        sub_kind,
+        tenant_id: object_tenant_id,
+        parent_group_id,
+        ancestor_group_ids,
+    };
+    scope_values_match(&binding.scope_kind, binding.scope_ref.as_deref(), &target)
+}
+
+fn role_scope_matches(
+    grant: &repo::ExpandedRoleGrant,
+    object_id: &str,
+    coarse_kind: &str,
+    sub_kind: &str,
+    object_tenant_id: Option<&str>,
+    parent_group_id: Option<Uuid>,
+    ancestor_group_ids: &[Uuid],
+) -> bool {
+    let target = ScopeMatchObject {
+        object_id,
+        coarse_kind,
+        sub_kind,
+        tenant_id: object_tenant_id,
+        parent_group_id,
+        ancestor_group_ids,
+    };
+    scope_values_match(&grant.scope_kind, grant.scope_ref.as_deref(), &target)
+}
+
+struct ScopeMatchObject<'a> {
+    object_id: &'a str,
+    coarse_kind: &'a str,
+    sub_kind: &'a str,
+    tenant_id: Option<&'a str>,
+    parent_group_id: Option<Uuid>,
+    ancestor_group_ids: &'a [Uuid],
+}
+
+fn scope_values_match(
+    scope_kind: &ScopeKind,
+    scope_ref: Option<&str>,
+    target: &ScopeMatchObject<'_>,
+) -> bool {
+    match scope_kind {
         ScopeKind::Platform => true,
-        ScopeKind::Tenant => match (binding.scope_ref.as_deref(), object_tenant_id) {
+        ScopeKind::Tenant => match (scope_ref, target.tenant_id) {
             (Some(scope_ref), Some(tenant)) => scope_ref == tenant,
             _ => false,
         },
-        ScopeKind::ObjectKind => binding
-            .scope_ref
-            .as_deref()
-            .map(|k| k == coarse_kind)
-            .unwrap_or(false),
-        ScopeKind::ObjectType => binding
-            .scope_ref
-            .as_deref()
+        ScopeKind::ObjectKind => scope_ref.map(|k| k == target.coarse_kind).unwrap_or(false),
+        ScopeKind::ObjectType => scope_ref
             .and_then(|s| s.split_once(':'))
-            .map(|(prefix, sub)| prefix == coarse_kind && sub == sub_kind)
+            .map(|(prefix, sub)| prefix == target.coarse_kind && sub == target.sub_kind)
             .unwrap_or(false),
-        ScopeKind::Object => binding
-            .scope_ref
-            .as_deref()
-            .map(|r| r == object_id)
-            .unwrap_or(false),
+        ScopeKind::Object => scope_ref.map(|r| r == target.object_id).unwrap_or(false),
+        ScopeKind::GroupObjectType => group_object_scope_matches(
+            scope_ref,
+            target.coarse_kind,
+            target.sub_kind,
+            target.parent_group_id,
+            &[],
+        ),
+        ScopeKind::GroupTreeObjectType => group_object_scope_matches(
+            scope_ref,
+            target.coarse_kind,
+            target.sub_kind,
+            None,
+            target.ancestor_group_ids,
+        ),
+        ScopeKind::GroupChildKind => {
+            group_kind_scope_matches(scope_ref, target.coarse_kind, target.parent_group_id, &[])
+        }
+        ScopeKind::GroupDescendantKind => group_kind_scope_matches(
+            scope_ref,
+            target.coarse_kind,
+            target.parent_group_id,
+            target.ancestor_group_ids,
+        ),
     }
+}
+
+fn group_object_scope_matches(
+    scope_ref: Option<&str>,
+    coarse_kind: &str,
+    sub_kind: &str,
+    parent_group_id: Option<Uuid>,
+    ancestor_group_ids: &[Uuid],
+) -> bool {
+    let Some((group_id, object_type)) = parse_group_scope_ref(scope_ref) else {
+        return false;
+    };
+    let Some((prefix, sub)) = object_type.split_once(':') else {
+        return false;
+    };
+    prefix == coarse_kind
+        && sub == sub_kind
+        && group_scope_contains(parent_group_id, ancestor_group_ids, group_id)
+}
+
+fn group_kind_scope_matches(
+    scope_ref: Option<&str>,
+    coarse_kind: &str,
+    parent_group_id: Option<Uuid>,
+    ancestor_group_ids: &[Uuid],
+) -> bool {
+    let Some((group_id, kind)) = parse_group_scope_ref(scope_ref) else {
+        return false;
+    };
+    kind == "group"
+        && coarse_kind == "group"
+        && group_scope_contains(parent_group_id, ancestor_group_ids, group_id)
+}
+
+fn group_scope_contains(
+    parent_group_id: Option<Uuid>,
+    ancestor_group_ids: &[Uuid],
+    group_id: Uuid,
+) -> bool {
+    parent_group_id == Some(group_id) || ancestor_group_ids.contains(&group_id)
+}
+
+fn parse_group_scope_ref(scope_ref: Option<&str>) -> Option<(Uuid, &str)> {
+    let (group_id, rest) = scope_ref?.split_once(':')?;
+    Some((group_id.parse().ok()?, rest))
 }
 
 fn build_context(
@@ -752,6 +998,8 @@ fn build_context(
             "kind": object.kind,
             "tenant_id": object.tenant_id,
             "attributes": object.attributes,
+            "parent_group_id": object.parent_group_id,
+            "ancestor_group_ids": object.ancestor_group_ids,
         },
         "object": {
             "id": object.id,
@@ -759,6 +1007,8 @@ fn build_context(
             "type": object_type,
             "tenant_id": object.tenant_id,
             "attributes": object.attributes,
+            "parent_group_id": object.parent_group_id,
+            "ancestor_group_ids": object.ancestor_group_ids,
         },
         "tenant": tenant_value,
         "context": extra,
@@ -902,6 +1152,8 @@ mod tests {
             name: Some("telemetry".into()),
             tenant_id: Some(tenant_id),
             attributes: json!({"tags": ["production"]}),
+            parent_group_id: None,
+            ancestor_group_ids: Vec::new(),
         };
         let tenant = TenantEvalContext {
             id: tenant_id,
@@ -979,6 +1231,28 @@ mod tests {
     }
 
     #[test]
+    fn scope_object_type_matches_mg_service_resources() {
+        for resource_kind in ["rule", "report", "alarm"] {
+            let scope_ref = format!("resource:{resource_kind}");
+            let binding = make_binding(
+                ScopeKind::ObjectType,
+                Some(&scope_ref),
+                GrantKind::Capability,
+                Effect::Allow,
+            );
+
+            assert!(
+                scope_matches(&binding, "uuid", "resource", resource_kind, None),
+                "{scope_ref} should match {resource_kind} resources"
+            );
+            assert!(
+                !scope_matches(&binding, "uuid", "resource", "channel", None),
+                "{scope_ref} should not match channel resources"
+            );
+        }
+    }
+
+    #[test]
     fn scope_object_type_rejects_bare_value() {
         let b = make_binding(
             ScopeKind::ObjectType,
@@ -1020,6 +1294,96 @@ mod tests {
     }
 
     #[test]
+    fn group_object_type_matches_direct_parent_group() {
+        let group_id = Uuid::new_v4();
+        let b = make_binding(
+            ScopeKind::GroupObjectType,
+            Some(&format!("{group_id}:entity:device")),
+            GrantKind::Capability,
+            Effect::Allow,
+        );
+        assert!(scope_matches_with_groups(
+            &b,
+            "client-id",
+            "entity",
+            "device",
+            None,
+            Some(group_id),
+            &[],
+        ));
+        assert!(!scope_matches_with_groups(
+            &b,
+            "client-id",
+            "entity",
+            "device",
+            None,
+            None,
+            &[group_id],
+        ));
+    }
+
+    #[test]
+    fn group_tree_object_type_matches_ancestor_group() {
+        let group_id = Uuid::new_v4();
+        let child_group_id = Uuid::new_v4();
+        let grandchild_group_id = Uuid::new_v4();
+        let b = make_binding(
+            ScopeKind::GroupTreeObjectType,
+            Some(&format!("{group_id}:resource:channel")),
+            GrantKind::Capability,
+            Effect::Allow,
+        );
+        assert!(!scope_matches_with_groups(
+            &b,
+            "channel-id",
+            "resource",
+            "channel",
+            None,
+            Some(group_id),
+            &[],
+        ));
+        assert!(scope_matches_with_groups(
+            &b,
+            "channel-id",
+            "resource",
+            "channel",
+            None,
+            Some(child_group_id),
+            &[group_id],
+        ));
+        assert!(scope_matches_with_groups(
+            &b,
+            "channel-id",
+            "resource",
+            "channel",
+            None,
+            Some(grandchild_group_id),
+            &[child_group_id, group_id],
+        ));
+    }
+
+    #[test]
+    fn group_descendant_kind_matches_nested_group_object() {
+        let group_id = Uuid::new_v4();
+        let child_group_id = Uuid::new_v4();
+        let b = make_binding(
+            ScopeKind::GroupDescendantKind,
+            Some(&format!("{group_id}:group")),
+            GrantKind::Capability,
+            Effect::Allow,
+        );
+        assert!(scope_matches_with_groups(
+            &b,
+            "group-id",
+            "group",
+            "group",
+            None,
+            Some(child_group_id),
+            &[group_id],
+        ));
+    }
+
+    #[test]
     fn scope_tenant_matches_when_tenant_ids_equal() {
         let tenant_id = Uuid::new_v4().to_string();
         let b = make_binding(
@@ -1044,6 +1408,32 @@ mod tests {
             Some(&other_tenant)
         ));
         assert!(!scope_matches(&b, "any-uuid", "resource", "channel", None));
+    }
+
+    #[test]
+    fn scope_tenant_covers_tenant_owned_entities_and_resources() {
+        let tenant_id = Uuid::new_v4().to_string();
+        let b = make_binding(
+            ScopeKind::Tenant,
+            Some(&tenant_id),
+            GrantKind::Role,
+            Effect::Allow,
+        );
+
+        assert!(scope_matches(
+            &b,
+            "client-id",
+            "entity",
+            "device",
+            Some(&tenant_id)
+        ));
+        assert!(scope_matches(
+            &b,
+            "channel-id",
+            "resource",
+            "channel",
+            Some(&tenant_id)
+        ));
     }
 
     #[test]
@@ -1097,6 +1487,10 @@ mod tests {
             (ScopeKind::ObjectKind, "object_kind"),
             (ScopeKind::ObjectType, "object_type"),
             (ScopeKind::Object, "object"),
+            (ScopeKind::GroupObjectType, "group_object_type"),
+            (ScopeKind::GroupTreeObjectType, "group_tree_object_type"),
+            (ScopeKind::GroupChildKind, "group_child_kind"),
+            (ScopeKind::GroupDescendantKind, "group_descendant_kind"),
         ] {
             let v = serde_json::to_value(&variant).unwrap();
             assert_eq!(v, serde_json::json!(canonical));

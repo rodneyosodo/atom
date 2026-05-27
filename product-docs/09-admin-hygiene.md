@@ -7,8 +7,8 @@
 ## Problem
 
 Over time, an authorization system accumulates stale data:
-- Policies that reference entities or roles that have been deleted.
-- Resources that no policy covers — either intentionally public or accidentally unprotected.
+- Assignments that reference entities, Principal Groups, or roles that have been deleted.
+- Resources that no readable role permission covers — either intentionally hidden or accidentally unreachable.
 - Credentials that are about to expire, which could break integrations silently.
 
 Without hygiene endpoints, an administrator must write custom SQL queries to surface these issues.
@@ -18,18 +18,18 @@ Without hygiene endpoints, an administrator must write custom SQL queries to sur
 ## Endpoints
 
 ```
-GET /admin/orphan-policies
+GET /admin/orphan-assignments
 GET /admin/unprotected-resources
 GET /admin/expiring-credentials
 ```
 
-**Authentication:** Bearer token required. All admin endpoints require `RequireManage` (the caller must hold the `manage` capability with `scope_kind = all`).
+**Authentication:** Bearer token required. All admin endpoints require platform administration permission.
 
 ---
 
-## 1. GET /admin/orphan-policies
+## 1. GET /admin/orphan-assignments
 
-Returns policy bindings where the referenced subject (entity or group) or grant (capability or role) no longer exists.
+Returns role assignments where the referenced subject (entity or Principal Group) or role no longer exists.
 
 ### Query parameters
 
@@ -44,30 +44,24 @@ Returns policy bindings where the referenced subject (entity or group) or grant 
 {
   "items": [
     {
-      "id": "p1-...",
+      "id": "assignment-1...",
       "subject_kind": "entity",
       "subject_id": "aaa-...",
-      "grant_kind": "role",
-      "grant_id": "v1-...",
-      "scope_kind": "resource_kind",
-      "scope_ref": "channel",
+      "role_id": "role-1...",
       "effect": "allow",
       "conditions": {},
       "created_at": "2026-03-15T12:00:00Z",
       "orphan_reason": "subject_not_found"
     },
     {
-      "id": "p2-...",
-      "subject_kind": "group",
-      "subject_id": "g1-...",
-      "grant_kind": "capability",
-      "grant_id": "c99-...",
-      "scope_kind": "all",
-      "scope_ref": null,
+      "id": "assignment-2...",
+      "subject_kind": "principal_group",
+      "subject_id": "pg1-...",
+      "role_id": "missing-role...",
       "effect": "allow",
       "conditions": {},
       "created_at": "2026-02-01T08:00:00Z",
-      "orphan_reason": "grant_not_found"
+      "orphan_reason": "role_not_found"
     }
   ],
   "total": 2
@@ -78,36 +72,33 @@ Returns policy bindings where the referenced subject (entity or group) or grant 
 
 | Value | Meaning |
 |---|---|
-| `subject_not_found` | The referenced entity or group has been deleted |
-| `grant_not_found` | The referenced capability or role has been deleted |
+| `subject_not_found` | The referenced entity or Principal Group has been deleted |
+| `role_not_found` | The referenced role has been deleted |
 
 ### Implementation notes
 
 ```sql
--- Subject orphans (entity)
-SELECT pb.* FROM policy_bindings pb
-LEFT JOIN entities e ON pb.subject_kind = 'entity' AND pb.subject_id = e.id
-LEFT JOIN groups g ON pb.subject_kind = 'group' AND pb.subject_id = g.id
+-- Subject orphans
+SELECT ra.* FROM role_assignments ra
+LEFT JOIN entities e ON ra.subject_kind = 'entity' AND ra.subject_id = e.id
+LEFT JOIN principal_groups pg ON ra.subject_kind = 'principal_group' AND ra.subject_id = pg.id
 WHERE
-  (pb.subject_kind = 'entity' AND e.id IS NULL)
-  OR (pb.subject_kind = 'group' AND g.id IS NULL);
+  (ra.subject_kind = 'entity' AND e.id IS NULL)
+  OR (ra.subject_kind = 'principal_group' AND pg.id IS NULL);
 
--- Grant orphans
-SELECT pb.* FROM policy_bindings pb
-LEFT JOIN capabilities c ON pb.grant_kind = 'capability' AND pb.grant_id = c.id
-LEFT JOIN roles r ON pb.grant_kind = 'role' AND pb.grant_id = r.id
-WHERE
-  (pb.grant_kind = 'capability' AND c.id IS NULL)
-  OR (pb.grant_kind = 'role' AND r.id IS NULL);
+-- Role orphans
+SELECT ra.* FROM role_assignments ra
+LEFT JOIN roles r ON ra.role_id = r.id
+WHERE r.id IS NULL;
 ```
 
-These can be combined into a single query that checks both subject and grant orphans.
+These can be combined into a single query that checks both subject and role orphans.
 
 ---
 
 ## 2. GET /admin/unprotected-resources
 
-Returns resources that have **no policy bindings** covering them — either directly (`scope_kind = resource`), by kind (`scope_kind = resource_kind`), or globally (`scope_kind = all`).
+Returns resources that have **no read-access coverage** through role permission blocks and assignments.
 
 ### Query parameters
 
@@ -146,28 +137,21 @@ Returns resources that have **no policy bindings** covering them — either dire
 
 ### Implementation notes
 
-A resource is "unprotected" if no policy binding's scope covers it:
+A resource is "unprotected" if no assigned role permission block gives any subject `read` access to it:
 
 ```sql
 SELECT r.* FROM resources r
 WHERE NOT EXISTS (
-  -- Direct resource binding
-  SELECT 1 FROM policy_bindings pb
-  WHERE pb.scope_kind = 'resource' AND pb.scope_ref = r.id::text
-)
-AND NOT EXISTS (
-  -- Resource kind binding
-  SELECT 1 FROM policy_bindings pb
-  WHERE pb.scope_kind = 'resource_kind' AND pb.scope_ref = r.kind
-)
-AND NOT EXISTS (
-  -- Global binding
-  SELECT 1 FROM policy_bindings pb
-  WHERE pb.scope_kind = 'all'
+  SELECT 1
+  FROM role_assignments ra
+  JOIN role_permission_blocks rpb ON rpb.role_id = ra.role_id
+  JOIN role_permission_actions rpa ON rpa.permission_block_id = rpb.id
+  WHERE rpa.action = 'read'
+    AND role_permission_applies_to_resource(rpb.id, r.id)
 );
 ```
 
-Note: if **any** `scope_kind = all` binding exists in the system, no resource is unprotected (every resource is covered). This is expected and the endpoint will return an empty list.
+The exact SQL helper shape is implementation-defined, but the check must use authorization filtering in SQL rather than per-resource PDP calls.
 
 ---
 
@@ -237,7 +221,7 @@ Note: `secret_hash` and `identifier` are **never** included in the response — 
 
 ## Authorization
 
-All three endpoints require `RequireManage`. These are administrative endpoints — regular entities should not be able to enumerate system-wide orphans, unprotected resources, or credentials.
+All three endpoints require platform administration permission. These are administrative endpoints — regular entities should not be able to enumerate system-wide orphans, unprotected resources, or credentials.
 
 ---
 
@@ -245,11 +229,11 @@ All three endpoints require `RequireManage`. These are administrative endpoints 
 
 ### 1. Regular cleanup
 
-Run `GET /admin/orphan-policies` weekly. Delete any orphaned bindings to keep the policy set clean.
+Run `GET /admin/orphan-assignments` weekly. Delete any orphaned assignments to keep the access graph clean.
 
 ### 2. Security audit
 
-Run `GET /admin/unprotected-resources` to verify that every resource in a tenant is covered by at least one policy.
+Run `GET /admin/unprotected-resources` to verify that every resource in a tenant has expected read-access coverage.
 
 ### 3. Credential rotation alerts
 

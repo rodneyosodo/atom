@@ -49,6 +49,8 @@ pub struct ListEntities {
     pub profile_id: Option<Uuid>,
     pub tenant_id: Option<Uuid>,
     pub status: Option<EntityStatus>,
+    pub parent_group_id: Option<Uuid>,
+    pub include_descendants: bool,
     #[serde(default = "default_limit")]
     pub limit: i64,
     #[serde(default)]

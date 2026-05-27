@@ -68,7 +68,7 @@ async fn tenant_creation_bootstraps_admin_role_capabilities_binding_and_membersh
             .expect("tenant-admin role");
 
     let capabilities: Vec<String> = sqlx::query_scalar(
-        r#"SELECT c.name
+        r#"SELECT DISTINCT c.name
            FROM role_capabilities rc
            JOIN capabilities c ON c.id = rc.capability_id
            WHERE rc.role_id = $1
@@ -83,9 +83,16 @@ async fn tenant_creation_bootstraps_admin_role_capabilities_binding_and_membersh
         vec![
             "audit.read",
             "credential.manage",
+            "delete",
+            "execute",
+            "list",
             "manage",
             "policy.manage",
+            "publish",
+            "read",
             "role.manage",
+            "subscribe",
+            "write",
         ]
     );
     assert!(!capabilities.iter().any(|c| c == "tenant.manage"));

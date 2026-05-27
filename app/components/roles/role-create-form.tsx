@@ -36,7 +36,7 @@ const TENANT_NONE = "__none__";
 
 const CREATE_ROLE_MUTATION = `
   mutation CreateRole($input: CreateRoleInput!) {
-    createRole(input: $input) { id name tenantId description createdAt updatedAt }
+    createRole(input: $input) { id name tenantId description derivedKind createdAt updatedAt }
   }
 `;
 
@@ -70,6 +70,15 @@ const ROLE_CAPABILITIES_QUERY = `
   }
 `;
 
+const ROLE_DETAIL_QUERY = `
+  query RoleFormRoleDetail($roleId: ID!) {
+    role(id: $roleId) {
+      id
+      derivedKind
+    }
+  }
+`;
+
 const TENANTS_QUERY = `
   query RoleFormTenants {
     tenants(limit: 100, offset: 0) { items { id name } }
@@ -97,6 +106,18 @@ const createSchema = z.object({
   name: z.string().trim().min(1, "Name is required."),
   tenantId: z.string(),
   description: z.string().trim(),
+  scopeKind: z.enum([
+    "platform",
+    "tenant",
+    "object",
+    "object_type",
+    "object_kind",
+    "group_object_type",
+    "group_tree_object_type",
+    "group_child_kind",
+    "group_descendant_kind",
+  ]),
+  scopeRef: z.string().trim(),
 });
 
 const editSchema = z.object({
@@ -141,46 +162,40 @@ function CreateForm({
 
   const form = useForm<CreateFormValues>({
     resolver: zodResolver(createSchema),
-    defaultValues: { name: "", tenantId: "", description: "" },
+    defaultValues: {
+      name: "",
+      tenantId: "",
+      description: "",
+      scopeKind: "tenant",
+      scopeRef: "",
+    },
   });
 
   React.useEffect(() => {
     if (isTenantScoped) form.setValue("tenantId", selection.id);
   }, [isTenantScoped, selection.id, form]);
 
-  const addCap = useMutation({
-    mutationFn: ({
-      roleId,
-      capabilityId,
-    }: {
-      roleId: string;
-      capabilityId: string;
-    }) =>
-      graphqlClient({
-        query: ADD_CAPABILITY_MUTATION,
-        variables: { roleId, capabilityId },
-      }),
-  });
-
   const save = useMutation({
     mutationFn: async (values: CreateFormValues) => {
-      const result = await graphqlClient<{ createRole: { id: string } }>({
+      return graphqlClient<{ createRole: { id: string } }>({
         query: CREATE_ROLE_MUTATION,
         variables: {
           input: {
             name: values.name,
             tenantId: values.tenantId || undefined,
             description: values.description || undefined,
+            scopeKind: values.scopeKind,
+            scopeRef:
+              values.scopeKind === "platform"
+                ? undefined
+                : values.scopeKind === "tenant"
+                  ? values.tenantId || undefined
+                  : values.scopeRef || undefined,
+            permissionBlocks: [permissionBlockInput(values, selectedCapIds)],
+            childRoleIds: [],
           },
         },
       });
-      const roleId = result.createRole.id;
-      await Promise.all(
-        selectedCapIds.map((capabilityId) =>
-          addCap.mutateAsync({ roleId, capabilityId }),
-        ),
-      );
-      return result;
     },
     onSuccess: () => {
       toast.success("Role created");
@@ -262,6 +277,50 @@ function CreateForm({
             </FormItem>
           )}
         />
+        <FormField
+          control={form.control}
+          name="scopeKind"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Applies to</FormLabel>
+              <Select value={field.value} onValueChange={field.onChange}>
+                <FormControl>
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                </FormControl>
+                <SelectContent>
+                  <SelectItem value="platform">Platform</SelectItem>
+                  <SelectItem value="tenant">Whole tenant</SelectItem>
+                  <SelectItem value="object">Specific object</SelectItem>
+                  <SelectItem value="object_type">All objects of type</SelectItem>
+                  <SelectItem value="object_kind">All objects of kind</SelectItem>
+                  <SelectItem value="group_object_type">Direct group objects</SelectItem>
+                  <SelectItem value="group_tree_object_type">Subgroup objects</SelectItem>
+                  <SelectItem value="group_child_kind">Direct child groups</SelectItem>
+                  <SelectItem value="group_descendant_kind">All subgroup descendants</SelectItem>
+                </SelectContent>
+              </Select>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name="scopeRef"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Object or group reference</FormLabel>
+              <FormControl>
+                <Input
+                  placeholder="groupId:entity:device, groupId:resource:channel, or groupId:group"
+                  {...field}
+                />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
         <CapabilityPicker
           all={capabilities}
           selected={selectedCapIds}
@@ -285,6 +344,68 @@ function CreateForm({
       </form>
     </Form>
   );
+}
+
+function permissionBlockInput(values: CreateFormValues, capabilityIds: string[]) {
+  if (values.scopeKind === "platform") {
+    return { appliesTo: "platform", capabilityIds };
+  }
+  if (values.scopeKind === "tenant") {
+    return {
+      appliesTo: "tenant",
+      tenantId: values.tenantId || undefined,
+      capabilityIds,
+    };
+  }
+  if (values.scopeKind === "object") {
+    return {
+      appliesTo: "object",
+      objectId: values.scopeRef || undefined,
+      capabilityIds,
+    };
+  }
+  if (values.scopeKind === "object_kind") {
+    return {
+      appliesTo: "object_kind",
+      objectKind: values.scopeRef || undefined,
+      capabilityIds,
+    };
+  }
+  if (values.scopeKind === "object_type") {
+    const [objectKind] = values.scopeRef.split(":");
+    return {
+      appliesTo: "object_type",
+      objectKind,
+      objectType: values.scopeRef || undefined,
+      capabilityIds,
+    };
+  }
+  if (
+    values.scopeKind === "group_object_type" ||
+    values.scopeKind === "group_tree_object_type"
+  ) {
+    const [groupId, objectKind, ...objectTypeParts] = values.scopeRef.split(":");
+    return {
+      appliesTo:
+        values.scopeKind === "group_object_type"
+          ? "object_group_type"
+          : "object_group_tree_type",
+      groupId,
+      objectKind,
+      objectType: `${objectKind}:${objectTypeParts.join(":")}`,
+      capabilityIds,
+    };
+  }
+  const [groupId, objectKind] = values.scopeRef.split(":");
+  return {
+    appliesTo:
+      values.scopeKind === "group_child_kind"
+        ? "object_group_child_kind"
+        : "object_group_descendant_kind",
+    groupId,
+    objectKind,
+    capabilityIds,
+  };
 }
 
 // ─── Edit form ────────────────────────────────────────────────────────────────
@@ -312,6 +433,22 @@ function EditForm({
   });
   const roleCaps: GqlCapability[] = roleCapsQuery.data?.roleCapabilities ?? [];
   const roleCapsIds = roleCaps.map((c) => c.id);
+  const roleDetailQuery = useQuery({
+    queryKey: ["role-detail-form", role.id],
+    queryFn: ({ signal }) =>
+      graphqlClient<{
+        role: {
+          derivedKind: "simple" | "composite" | "empty";
+        };
+      }>({
+        query: ROLE_DETAIL_QUERY,
+        variables: { roleId: role.id },
+        signal,
+      }),
+    staleTime: 0,
+  });
+  const derivedKind = roleDetailQuery.data?.role.derivedKind ?? "empty";
+  const isLegacyRolePackage = derivedKind === "composite";
 
   const addCap = useMutation({
     mutationFn: (capabilityId: string) =>
@@ -392,7 +529,12 @@ function EditForm({
             </FormItem>
           )}
         />
-        {roleCapsQuery.isFetching && roleCaps.length === 0 ? (
+        {isLegacyRolePackage ? (
+          <p className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">
+            This older bundled role is read-only in the simplified role model.
+            Create a role with permission blocks instead.
+          </p>
+        ) : roleCapsQuery.isFetching && roleCaps.length === 0 ? (
           <p className="text-xs text-muted-foreground">Loading capabilities…</p>
         ) : (
           <CapabilityPicker

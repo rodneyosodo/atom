@@ -1,5 +1,7 @@
 # GET /roles/:id/holders
 
+> Legacy draft note: this document still uses the old policy/scope terminology. The authoritative product model is now [Atom access model](./11-access-model-simplification.md). Update this endpoint contract before implementation so holders are resolved from role assignments to entities and Principal Groups.
+
 ## Priority: 2 (Should-have)
 
 ---

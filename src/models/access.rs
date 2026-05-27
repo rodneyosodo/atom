@@ -9,6 +9,7 @@ use super::enums::{
     AuditOutcome, CredentialKind, CredentialStatus, Effect, EntityKind, EntityStatus, GrantKind,
     ScopeKind, SubjectKind,
 };
+use super::{policy::PolicyBinding, role::Role};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntitySummary {
@@ -144,6 +145,7 @@ pub struct EvaluatedBinding {
     pub grant_kind: GrantKind,
     pub grant_id: Uuid,
     pub role_name: Option<String>,
+    pub role_path: Option<String>,
     pub scope_kind: ScopeKind,
     pub scope_ref: Option<String>,
     pub conditions: Value,
@@ -296,6 +298,31 @@ pub struct RoleHolderItem {
 pub struct RoleHoldersResponse {
     pub role: RoleWithCapabilities,
     pub items: Vec<RoleHolderItem>,
+    pub total: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SubjectRoleAssignmentsQuery {
+    pub tenant_id: Option<Uuid>,
+    pub subject_kind: SubjectKind,
+    pub subject_id: Uuid,
+    pub derived_kind: Option<String>,
+    pub q: Option<String>,
+    #[serde(default = "default_limit")]
+    pub limit: i64,
+    #[serde(default)]
+    pub offset: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SubjectRoleAssignment {
+    pub policy: PolicyBinding,
+    pub role: Role,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SubjectRoleAssignmentList {
+    pub items: Vec<SubjectRoleAssignment>,
     pub total: i64,
 }
 

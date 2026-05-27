@@ -4,7 +4,16 @@ export type PolicyDraft = {
   subjectName?: string;
   grantKind: "capability" | "role";
   grantName?: string;
-  scopeKind: "platform" | "tenant" | "object_kind" | "object_type" | "object";
+  scopeKind:
+    | "platform"
+    | "tenant"
+    | "object_kind"
+    | "object_type"
+    | "object"
+    | "group_object_type"
+    | "group_tree_object_type"
+    | "group_child_kind"
+    | "group_descendant_kind";
   scopeRef?: string;
   conditions: Array<{ path: string; operator: "equals"; value: string }>;
 };
@@ -36,5 +45,13 @@ export function scopeSummary(kind: PolicyDraft["scopeKind"], ref?: string) {
       return ref ? `all ${ref} resources` : "all objects of a type";
     case "object":
       return ref ? `object ${ref}` : "a specific object";
+    case "group_object_type":
+      return ref ? `direct group-contained ${ref}` : "direct group-contained objects";
+    case "group_tree_object_type":
+      return ref ? `subgroup-contained ${ref}` : "objects in subgroups";
+    case "group_child_kind":
+      return ref ? `direct child groups of ${ref}` : "direct child groups";
+    case "group_descendant_kind":
+      return ref ? `descendant groups of ${ref}` : "descendant groups";
   }
 }

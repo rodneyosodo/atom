@@ -21,6 +21,7 @@ export function GroupInspectDetails({ row }: { row: Row | null }) {
 
   const id = row?.id ? String(row.id) : "";
   const tenantId = row?.tenantId ? String(row.tenantId) : "";
+  const parentId = row?.parentId ? String(row.parentId) : "";
 
   const tenantQuery = useQuery({
     enabled: Boolean(tenantId),
@@ -32,6 +33,27 @@ export function GroupInspectDetails({ row }: { row: Row | null }) {
         signal,
       }),
     staleTime: 60_000,
+  });
+  const hierarchyQuery = useQuery({
+    enabled: Boolean(id),
+    queryKey: ["group-inspect-hierarchy", id, parentId],
+    queryFn: ({ signal }) =>
+      graphqlClient<{
+        childGroups: { items: { id: string; name: string }[] };
+        parent?: { id: string; name: string } | null;
+      }>({
+        query: parentId
+          ? `query GroupInspectHierarchy($id: ID!, $parentId: ID!) {
+              childGroups(parentId: $id, limit: 50, offset: 0) { items { id name } }
+              parent: group(id: $parentId) { id name }
+            }`
+          : `query GroupInspectHierarchy($id: ID!) {
+              childGroups(parentId: $id, limit: 50, offset: 0) { items { id name } }
+            }`,
+        variables: parentId ? { id, parentId } : { id },
+        signal,
+      }),
+    staleTime: 30_000,
   });
 
   function copyId() {
@@ -82,6 +104,34 @@ export function GroupInspectDetails({ row }: { row: Row | null }) {
           <span className="text-sm">{String(row.description)}</span>
         </Field>
       ) : null}
+
+      <Field label="Parent group">
+        <span className="text-sm">
+          {parentId
+            ? (hierarchyQuery.data?.parent?.name ?? parentId)
+            : "No parent"}
+        </span>
+      </Field>
+
+      <Field label="Child groups">
+        {hierarchyQuery.data?.childGroups.items.length ? (
+          <div className="flex flex-wrap gap-1">
+            {hierarchyQuery.data.childGroups.items.map((child) => (
+              <span
+                key={child.id}
+                className="rounded-md bg-muted px-2 py-1 text-xs"
+              >
+                {child.name}
+              </span>
+            ))}
+          </div>
+        ) : (
+          <span className="text-sm text-muted-foreground">No child groups</span>
+        )}
+        <p className="mt-2 text-xs text-muted-foreground">
+          Policies assigned to this group apply to members of its child groups.
+        </p>
+      </Field>
 
       <div className="grid gap-3 sm:grid-cols-2">
         {row.createdAt ? (

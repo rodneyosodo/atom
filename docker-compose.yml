@@ -30,9 +30,9 @@ services:
       ADMIN_SECRET: ${ADMIN_SECRET:?set ADMIN_SECRET}
       ATOM_MIN_PASSWORD_CHARS: ${ATOM_MIN_PASSWORD_CHARS:-12}
       ATOM_CORS_ALLOWED_ORIGINS: ${ATOM_CORS_ALLOWED_ORIGINS:-http://localhost:8080,http://localhost:3005}
-      ATOM_EMAIL_VERIFICATION_REDIRECT: ${ATOM_EMAIL_VERIFICATION_REDIRECT:-http://localhost:3005/verify-email}
-      ATOM_OAUTH_SUCCESS_REDIRECT: ${ATOM_OAUTH_SUCCESS_REDIRECT:-http://localhost:3005/callback}
-      ATOM_OAUTH_ERROR_REDIRECT: ${ATOM_OAUTH_ERROR_REDIRECT:-http://localhost:3005/callback}
+      ATOM_EMAIL_VERIFICATION_REDIRECT: ${ATOM_EMAIL_VERIFICATION_REDIRECT:-http://localhost:8080/auth/email/verify}
+      ATOM_OAUTH_SUCCESS_REDIRECT: ${ATOM_OAUTH_SUCCESS_REDIRECT:-http://localhost:3005/auth/callback}
+      ATOM_OAUTH_ERROR_REDIRECT: ${ATOM_OAUTH_ERROR_REDIRECT:-http://localhost:3005/auth/callback}
       ATOM_PASSWORD_RESET_REDIRECT: ${ATOM_PASSWORD_RESET_REDIRECT:-http://localhost:3005/reset-password}
       ATOM_INVITATION_REDIRECT: ${ATOM_INVITATION_REDIRECT:-http://localhost:3005/invitations/accept}
       ATOM_SIGNUP_ENABLED: ${ATOM_SIGNUP_ENABLED}
@@ -58,9 +58,9 @@ services:
       ATOM_MIN_PASSWORD_CHARS: ${ATOM_MIN_PASSWORD_CHARS:-12}
       ATOM_CORS_ALLOWED_ORIGINS: ${ATOM_CORS_ALLOWED_ORIGINS:-http://localhost:8080,http://localhost:3005}
       ATOM_PUBLIC_BASE_URL: ${ATOM_PUBLIC_BASE_URL:-http://localhost:8081}
-      ATOM_EMAIL_VERIFICATION_REDIRECT: ${ATOM_EMAIL_VERIFICATION_REDIRECT:-http://localhost:3005/verify-email}
-      ATOM_OAUTH_SUCCESS_REDIRECT: ${ATOM_OAUTH_SUCCESS_REDIRECT:-http://localhost:3005/callback}
-      ATOM_OAUTH_ERROR_REDIRECT: ${ATOM_OAUTH_ERROR_REDIRECT:-http://localhost:3005/callback}
+      ATOM_EMAIL_VERIFICATION_REDIRECT: ${ATOM_EMAIL_VERIFICATION_REDIRECT:-http://localhost:8081/auth/email/verify}
+      ATOM_OAUTH_SUCCESS_REDIRECT: ${ATOM_OAUTH_SUCCESS_REDIRECT:-http://localhost:3005/auth/callback}
+      ATOM_OAUTH_ERROR_REDIRECT: ${ATOM_OAUTH_ERROR_REDIRECT:-http://localhost:3005/auth/callback}
       ATOM_PASSWORD_RESET_REDIRECT: ${ATOM_PASSWORD_RESET_REDIRECT:-http://localhost:3005/reset-password}
       ATOM_INVITATION_REDIRECT: ${ATOM_INVITATION_REDIRECT:-http://localhost:3005/invitations/accept}
       ATOM_SIGNUP_ENABLED: ${ATOM_SIGNUP_ENABLED}
@@ -82,7 +82,7 @@ services:
     ports:
       - "${ATOM_UI_HTTP_PORT:-3005}:3000"
     profiles:
-      - default
+      - atom-ui
 
 volumes:
   postgres_data:

@@ -1,5 +1,7 @@
 # POST /authz/check/bulk
 
+> Legacy draft note: this document predates the simplified access model. The authoritative product model is now [Atom access model](./11-access-model-simplification.md). Bulk checks must evaluate role permission blocks and assignments.
+
 ## Priority: 2 (Should-have)
 
 ---

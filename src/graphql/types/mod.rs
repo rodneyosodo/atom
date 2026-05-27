@@ -1,10 +1,11 @@
-use async_graphql::{Enum, InputObject, Object, ID};
+use async_graphql::{Context, Enum, InputObject, Object, Result, ID};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{
-    identity::service as identity_service,
+    authz::repo as authz_repo,
+    identity::{repo as identity_repo, service as identity_service},
     models::{
         access as access_model, api_endpoint as api_endpoint_model, capability as capability_model,
         entity as entity_model,
@@ -15,6 +16,7 @@ use crate::{
         group as group_model, profile as profile_model, resource as resource_model,
         role as role_model, session as session_model, tenant as tenant_model, token as token_model,
     },
+    state::AppState,
 };
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
@@ -66,6 +68,10 @@ pub enum GqlScopeKind {
     ObjectKind,
     ObjectType,
     Object,
+    GroupObjectType,
+    GroupTreeObjectType,
+    GroupChildKind,
+    GroupDescendantKind,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
@@ -195,6 +201,14 @@ impl Entity {
 
     async fn tenant_id(&self) -> Option<ID> {
         self.0.tenant_id.map(id)
+    }
+
+    async fn parent_group_id(&self, ctx: &Context<'_>) -> Result<Option<ID>> {
+        let state = ctx.data::<AppState>()?;
+        identity_repo::get_entity_parent_group(&state.pool, self.0.id)
+            .await
+            .map(|parent_id| parent_id.map(id))
+            .map_err(|err| async_graphql::Error::new(err.to_string()))
     }
 
     async fn status(&self) -> GqlEntityStatus {
@@ -407,6 +421,14 @@ impl Resource {
         self.0.owner_id.map(id)
     }
 
+    async fn parent_group_id(&self, ctx: &Context<'_>) -> Result<Option<ID>> {
+        let state = ctx.data::<AppState>()?;
+        authz_repo::get_resource_parent_group(&state.pool, self.0.id)
+            .await
+            .map(|parent_id| parent_id.map(id))
+            .map_err(|err| async_graphql::Error::new(err.to_string()))
+    }
+
     async fn attributes(&self) -> &Value {
         &self.0.attributes
     }
@@ -554,6 +576,10 @@ impl Group {
         self.0.tenant_id.map(id)
     }
 
+    async fn group_type(&self) -> &str {
+        &self.0.group_type
+    }
+
     async fn description(&self) -> Option<&str> {
         self.0.description.as_deref()
     }
@@ -688,12 +714,107 @@ impl Role {
         self.0.scope_ref.as_deref()
     }
 
+    async fn derived_kind(&self, ctx: &Context<'_>) -> Result<String> {
+        let state = ctx.data::<AppState>()?;
+        let kind = authz_repo::role_derived_kind(&state.pool, self.0.id)
+            .await
+            .map_err(|err| async_graphql::Error::new(err.to_string()))?;
+        Ok(match kind {
+            role_model::RoleDerivedKind::Simple => "simple".to_string(),
+            role_model::RoleDerivedKind::Composite => "composite".to_string(),
+            role_model::RoleDerivedKind::Empty => "empty".to_string(),
+        })
+    }
+
+    async fn child_roles(&self, ctx: &Context<'_>) -> Result<Vec<Role>> {
+        let state = ctx.data::<AppState>()?;
+        let roles = authz_repo::child_roles(&state.pool, self.0.id)
+            .await
+            .map_err(|err| async_graphql::Error::new(err.to_string()))?;
+        Ok(roles.into_iter().map(Role::from).collect())
+    }
+
+    async fn parent_roles(&self, ctx: &Context<'_>) -> Result<Vec<Role>> {
+        let state = ctx.data::<AppState>()?;
+        let roles = authz_repo::parent_roles(&state.pool, self.0.id)
+            .await
+            .map_err(|err| async_graphql::Error::new(err.to_string()))?;
+        Ok(roles.into_iter().map(Role::from).collect())
+    }
+
+    async fn permission_blocks(&self, ctx: &Context<'_>) -> Result<Vec<RolePermissionBlock>> {
+        let state = ctx.data::<AppState>()?;
+        let blocks = authz_repo::list_role_permission_blocks(&state.pool, self.0.id)
+            .await
+            .map_err(|err| async_graphql::Error::new(err.to_string()))?;
+        Ok(blocks.into_iter().map(RolePermissionBlock::from).collect())
+    }
+
     async fn created_at(&self) -> String {
         timestamp(self.0.created_at)
     }
 
     async fn updated_at(&self) -> Option<String> {
         self.0.updated_at.map(timestamp)
+    }
+}
+
+pub struct RolePermissionBlock(pub role_model::RolePermissionBlock);
+
+#[Object]
+impl RolePermissionBlock {
+    async fn id(&self) -> ID {
+        id(self.0.id)
+    }
+
+    async fn role_id(&self) -> ID {
+        id(self.0.role_id)
+    }
+
+    async fn applies_to(&self) -> &str {
+        &self.0.applies_to
+    }
+
+    async fn object_id(&self) -> Option<ID> {
+        self.0.object_id.map(id)
+    }
+
+    async fn object_kind(&self) -> Option<&str> {
+        self.0.object_kind.as_deref()
+    }
+
+    async fn object_type(&self) -> Option<&str> {
+        self.0.object_type.as_deref()
+    }
+
+    async fn tenant_id(&self) -> Option<ID> {
+        self.0.tenant_id.map(id)
+    }
+
+    async fn group_id(&self) -> Option<ID> {
+        self.0.group_id.map(id)
+    }
+
+    async fn capabilities(&self, ctx: &Context<'_>) -> Result<Vec<Capability>> {
+        let state = ctx.data::<AppState>()?;
+        let capabilities = authz_repo::role_permission_block_capabilities(&state.pool, self.0.id)
+            .await
+            .map_err(|err| async_graphql::Error::new(err.to_string()))?;
+        Ok(capabilities.into_iter().map(Capability::from).collect())
+    }
+
+    async fn created_at(&self) -> String {
+        timestamp(self.0.created_at)
+    }
+
+    async fn updated_at(&self) -> String {
+        timestamp(self.0.updated_at)
+    }
+}
+
+impl From<role_model::RolePermissionBlock> for RolePermissionBlock {
+    fn from(block: role_model::RolePermissionBlock) -> Self {
+        Self(block)
     }
 }
 
@@ -1034,6 +1155,7 @@ pub struct CreateGroupInput {
     pub id: Option<ID>,
     pub name: String,
     pub tenant_id: Option<ID>,
+    pub group_type: Option<String>,
     pub description: Option<String>,
     pub attributes: Option<Value>,
 }
@@ -1059,6 +1181,21 @@ pub struct CreateRoleInput {
     pub description: Option<String>,
     pub scope_kind: Option<String>,
     pub scope_ref: Option<String>,
+    pub permission_blocks: Option<Vec<CreateRolePermissionBlockInput>>,
+    pub capability_ids: Option<Vec<ID>>,
+    pub child_role_ids: Option<Vec<ID>>,
+    pub member_entity_ids: Option<Vec<ID>>,
+}
+
+#[derive(InputObject)]
+pub struct CreateRolePermissionBlockInput {
+    pub applies_to: String,
+    pub object_id: Option<ID>,
+    pub object_kind: Option<String>,
+    pub object_type: Option<String>,
+    pub tenant_id: Option<ID>,
+    pub group_id: Option<ID>,
+    pub capability_ids: Vec<ID>,
 }
 
 #[derive(InputObject)]
@@ -1289,6 +1426,42 @@ pub struct PolicyBindingList {
 #[Object]
 impl PolicyBindingList {
     async fn items(&self) -> &[PolicyBinding] {
+        &self.items
+    }
+
+    async fn total(&self) -> i64 {
+        self.total
+    }
+}
+
+pub struct SubjectRoleAssignment(pub access_model::SubjectRoleAssignment);
+
+#[Object]
+impl SubjectRoleAssignment {
+    async fn policy(&self) -> PolicyBinding {
+        self.0.policy.clone().into()
+    }
+
+    async fn role(&self) -> Role {
+        self.0.role.clone().into()
+    }
+}
+
+impl From<access_model::SubjectRoleAssignment> for SubjectRoleAssignment {
+    fn from(assignment: access_model::SubjectRoleAssignment) -> Self {
+        Self(assignment)
+    }
+}
+
+#[derive(Default)]
+pub struct SubjectRoleAssignmentList {
+    pub items: Vec<SubjectRoleAssignment>,
+    pub total: i64,
+}
+
+#[Object]
+impl SubjectRoleAssignmentList {
+    async fn items(&self) -> &[SubjectRoleAssignment] {
         &self.items
     }
 
@@ -1694,6 +1867,10 @@ impl From<GqlScopeKind> for ScopeKind {
             GqlScopeKind::ObjectKind => ScopeKind::ObjectKind,
             GqlScopeKind::ObjectType => ScopeKind::ObjectType,
             GqlScopeKind::Object => ScopeKind::Object,
+            GqlScopeKind::GroupObjectType => ScopeKind::GroupObjectType,
+            GqlScopeKind::GroupTreeObjectType => ScopeKind::GroupTreeObjectType,
+            GqlScopeKind::GroupChildKind => ScopeKind::GroupChildKind,
+            GqlScopeKind::GroupDescendantKind => ScopeKind::GroupDescendantKind,
         }
     }
 }
@@ -1706,6 +1883,10 @@ impl From<&ScopeKind> for GqlScopeKind {
             ScopeKind::ObjectKind => GqlScopeKind::ObjectKind,
             ScopeKind::ObjectType => GqlScopeKind::ObjectType,
             ScopeKind::Object => GqlScopeKind::Object,
+            ScopeKind::GroupObjectType => GqlScopeKind::GroupObjectType,
+            ScopeKind::GroupTreeObjectType => GqlScopeKind::GroupTreeObjectType,
+            ScopeKind::GroupChildKind => GqlScopeKind::GroupChildKind,
+            ScopeKind::GroupDescendantKind => GqlScopeKind::GroupDescendantKind,
         }
     }
 }

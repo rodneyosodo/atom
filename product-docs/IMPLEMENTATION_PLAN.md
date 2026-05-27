@@ -4,6 +4,8 @@ Tracks the work needed to bring the implementation in line with [PRD.md](./PRD.m
 Milestones are dependency-ordered; each milestone names the PRD IDs it closes
 and the test surface it ships with.
 
+> Legacy implementation log: this file records work completed under the older policy/scope model. The authoritative product direction is now [Atom access model](./11-access-model-simplification.md). Future implementation planning should replace scoped policies and overloaded groups with role permission blocks, assignments, Object Groups, and Principal Groups.
+
 ## Status
 
 | Milestone | Status |

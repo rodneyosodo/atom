@@ -2,10 +2,12 @@ use async_graphql::{Context, Object, Result, ID};
 
 use crate::{
     auth::Scope,
+    authz::engine,
     identity::repo,
     models::{
         enums::EntityStatus,
         group::{CreateGroup, ListGroups, UpdateGroup},
+        policy::AuthzRequest,
     },
     state::AppState,
 };
@@ -46,6 +48,7 @@ impl GroupQuery {
             ListGroups {
                 q,
                 tenant_id,
+                group_type: None,
                 parent_id: parse_optional_id(parent_id, "parentId")?,
                 status: parse_optional_entity_status(status),
                 limit: limit.map(i64::from).unwrap_or(20),
@@ -66,7 +69,23 @@ impl GroupQuery {
         let state = ctx.data::<AppState>()?;
         let id = parse_id(id, "id")?;
         let group = repo::get_group(&state.pool, id).await.map_err(gql_error)?;
-        require_read_access(&state.pool, auth.entity_id, group.tenant_id, id).await?;
+        if !engine::evaluate(
+            &state.pool,
+            &AuthzRequest {
+                subject_id: auth.entity_id,
+                action: "read".to_string(),
+                resource_id: None,
+                object_kind: Some("group".to_string()),
+                object_id: Some(id),
+                context: serde_json::Value::Null,
+            },
+        )
+        .await
+        .map_err(gql_error)?
+        .allowed
+        {
+            require_read_access(&state.pool, auth.entity_id, group.tenant_id, id).await?;
+        }
         Ok(group.into())
     }
 
@@ -123,6 +142,95 @@ impl GroupQuery {
         )
         .await
         .map_err(gql_error)?;
+        let mut authorized = Vec::new();
+        for item in list.items {
+            let allowed = engine::evaluate(
+                &state.pool,
+                &AuthzRequest {
+                    subject_id: auth.entity_id,
+                    action: "read".to_string(),
+                    resource_id: None,
+                    object_kind: Some("group".to_string()),
+                    object_id: Some(item.id),
+                    context: serde_json::Value::Null,
+                },
+            )
+            .await
+            .map_err(gql_error)?
+            .allowed;
+            if allowed {
+                authorized.push(Group::from(item));
+            }
+        }
+        let total = authorized.len() as i64;
+        Ok(GroupList {
+            items: authorized,
+            total,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn object_groups(
+        &self,
+        ctx: &Context<'_>,
+        q: Option<String>,
+        tenant_id: Option<ID>,
+        parent_id: Option<ID>,
+        status: Option<GqlEntityStatus>,
+        limit: Option<i32>,
+        offset: Option<i32>,
+    ) -> Result<GroupList> {
+        let auth = require_auth(ctx)?;
+        let state = ctx.data::<AppState>()?;
+        let tenant_id = parse_optional_id(tenant_id, "tenantId")?;
+        require_list_access(&state.pool, auth.entity_id, tenant_id).await?;
+        let list = repo::list_groups(
+            &state.pool,
+            ListGroups {
+                q,
+                tenant_id,
+                group_type: Some("object".to_string()),
+                parent_id: parse_optional_id(parent_id, "parentId")?,
+                status: parse_optional_entity_status(status),
+                limit: limit.map(i64::from).unwrap_or(20),
+                offset: offset.map(i64::from).unwrap_or(0),
+            },
+        )
+        .await
+        .map_err(gql_error)?;
+        Ok(GroupList {
+            items: list.items.into_iter().map(Group::from).collect(),
+            total: list.total,
+        })
+    }
+
+    async fn principal_groups(
+        &self,
+        ctx: &Context<'_>,
+        q: Option<String>,
+        tenant_id: Option<ID>,
+        status: Option<GqlEntityStatus>,
+        limit: Option<i32>,
+        offset: Option<i32>,
+    ) -> Result<GroupList> {
+        let auth = require_auth(ctx)?;
+        let state = ctx.data::<AppState>()?;
+        let tenant_id = parse_optional_id(tenant_id, "tenantId")?;
+        require_list_access(&state.pool, auth.entity_id, tenant_id).await?;
+        let list = repo::list_groups(
+            &state.pool,
+            ListGroups {
+                q,
+                tenant_id,
+                group_type: Some("principal".to_string()),
+                parent_id: None,
+                status: parse_optional_entity_status(status),
+                limit: limit.map(i64::from).unwrap_or(20),
+                offset: offset.map(i64::from).unwrap_or(0),
+            },
+        )
+        .await
+        .map_err(gql_error)?;
         Ok(GroupList {
             items: list.items.into_iter().map(Group::from).collect(),
             total: list.total,
@@ -155,6 +263,7 @@ impl GroupMutation {
                 id: parse_optional_id(input.id, "id")?,
                 name: input.name,
                 tenant_id,
+                group_type: input.group_type,
                 description: input.description,
                 attributes: input.attributes.unwrap_or(serde_json::Value::Null),
             },
@@ -163,6 +272,24 @@ impl GroupMutation {
         .map_err(gql_error)?;
 
         Ok(group.into())
+    }
+
+    async fn create_object_group(
+        &self,
+        ctx: &Context<'_>,
+        mut input: CreateGroupInput,
+    ) -> Result<Group> {
+        input.group_type = Some("object".to_string());
+        self.create_group(ctx, input).await
+    }
+
+    async fn create_principal_group(
+        &self,
+        ctx: &Context<'_>,
+        mut input: CreateGroupInput,
+    ) -> Result<Group> {
+        input.group_type = Some("principal".to_string());
+        self.create_group(ctx, input).await
     }
 
     async fn update_group(
@@ -219,6 +346,16 @@ impl GroupMutation {
         Ok(group.into())
     }
 
+    async fn set_object_group_parent(
+        &self,
+        ctx: &Context<'_>,
+        object_group_id: ID,
+        parent_group_id: ID,
+    ) -> Result<Group> {
+        self.set_group_parent(ctx, object_group_id, parent_group_id)
+            .await
+    }
+
     async fn remove_group_parent(&self, ctx: &Context<'_>, id: ID) -> Result<bool> {
         let auth = require_auth(ctx)?;
         let state = ctx.data::<AppState>()?;
@@ -229,6 +366,14 @@ impl GroupMutation {
             .await
             .map_err(gql_error)?;
         Ok(true)
+    }
+
+    async fn remove_object_group_parent(
+        &self,
+        ctx: &Context<'_>,
+        object_group_id: ID,
+    ) -> Result<bool> {
+        self.remove_group_parent(ctx, object_group_id).await
     }
 
     async fn delete_group(&self, ctx: &Context<'_>, id: ID) -> Result<bool> {

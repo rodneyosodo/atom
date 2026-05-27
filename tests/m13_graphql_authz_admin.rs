@@ -34,9 +34,9 @@ fn state(pool: PgPool) -> AppState {
         dev_allow_unverified_email_login: false,
         public_base_url: "http://localhost:8080".into(),
         cors_allowed_origins: vec!["http://localhost:8080".into()],
-        email_verification_redirect: "http://localhost:3005/verify-email".into(),
-        password_reset_redirect: "http://localhost:3005/reset-password".into(),
-        invitation_redirect: "http://localhost:3005/invitations/accept".into(),
+        email_verification_redirect: "http://localhost:8080/auth/email/verify".into(),
+        password_reset_redirect: "http://localhost:8080/reset-password".into(),
+        invitation_redirect: "http://localhost:8080/invitations/accept".into(),
         oauth_success_redirect: "http://localhost:8080".into(),
         oauth_error_redirect: "http://localhost:8080".into(),
         oidc_providers: vec![],
@@ -110,6 +110,66 @@ async fn seeded_capability(pool: &PgPool, name: &str) -> Uuid {
         .fetch_one(pool)
         .await
         .expect("seeded capability")
+}
+
+async fn tenant(pool: &PgPool) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query("INSERT INTO tenants (id, name, status) VALUES ($1, $2, 'active')")
+        .bind(id)
+        .bind(format!("graphql-tenant-{id}"))
+        .execute(pool)
+        .await
+        .expect("insert tenant");
+    id
+}
+
+async fn tenant_entity(pool: &PgPool, tenant_id: Uuid, kind: &str) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO entities (id, kind, name, tenant_id, status) VALUES ($1, $2, $3, $4, 'active')",
+    )
+    .bind(id)
+    .bind(kind)
+    .bind(format!("graphql-tenant-{kind}-{id}"))
+    .bind(tenant_id)
+    .execute(pool)
+    .await
+    .expect("insert tenant entity");
+    id
+}
+
+async fn tenant_group(pool: &PgPool, tenant_id: Uuid) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query("INSERT INTO groups (id, name, tenant_id, attributes) VALUES ($1, $2, $3, '{}')")
+        .bind(id)
+        .bind(format!("graphql-group-{id}"))
+        .bind(tenant_id)
+        .execute(pool)
+        .await
+        .expect("insert group");
+    id
+}
+
+async fn scoped_role(
+    pool: &PgPool,
+    tenant_id: Uuid,
+    name: &str,
+    scope_kind: &str,
+    scope_ref: &str,
+) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO roles (id, name, tenant_id, scope_kind, scope_ref) VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(id)
+    .bind(format!("{name}-{id}"))
+    .bind(tenant_id)
+    .bind(scope_kind)
+    .bind(scope_ref)
+    .execute(pool)
+    .await
+    .expect("insert role");
+    id
 }
 
 #[tokio::test]
@@ -417,6 +477,175 @@ async fn create_policy_and_authz_check_allow_and_deny() {
         .expect("policies")
         .iter()
         .any(|item| item["id"] == policy_id));
+}
+
+#[tokio::test]
+#[ignore]
+async fn subject_role_assignments_list_group_composites_and_authorize_members() {
+    let pool = common::pool().await;
+    let tenant_id = tenant(&pool).await;
+    let user_id = tenant_entity(&pool, tenant_id, "human").await;
+    let group_id = tenant_group(&pool, tenant_id).await;
+    sqlx::query("INSERT INTO group_members (group_id, entity_id) VALUES ($1, $2)")
+        .bind(group_id)
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .expect("insert group member");
+    let read_id = seeded_capability(&pool, "read").await;
+    let simple_role_id = scoped_role(
+        &pool,
+        tenant_id,
+        "group-reader",
+        "object",
+        &group_id.to_string(),
+    )
+    .await;
+    sqlx::query("INSERT INTO role_capabilities (role_id, capability_id) VALUES ($1, $2)")
+        .bind(simple_role_id)
+        .bind(read_id)
+        .execute(&pool)
+        .await
+        .expect("insert role capability");
+    let composite_role_id = scoped_role(
+        &pool,
+        tenant_id,
+        "group-operator",
+        "object",
+        &group_id.to_string(),
+    )
+    .await;
+    sqlx::query("INSERT INTO role_composites (parent_role_id, child_role_id) VALUES ($1, $2)")
+        .bind(composite_role_id)
+        .bind(simple_role_id)
+        .execute(&pool)
+        .await
+        .expect("insert role composite");
+    let schema = build_schema(state(pool));
+
+    let assigned = schema
+        .execute(authed(format!(
+            r#"
+            mutation {{
+              createPolicy(input: {{
+                tenantId: "{tenant_id}",
+                subjectKind: group,
+                subjectId: "{group_id}",
+                grantKind: role,
+                grantId: "{composite_role_id}",
+                scopeKind: tenant,
+                scopeRef: "{tenant_id}",
+                effect: allow
+              }}) {{
+                id
+              }}
+            }}
+            "#
+        )))
+        .await;
+    assert!(assigned.errors.is_empty(), "{:?}", assigned.errors);
+
+    let listed = schema
+        .execute(authed(format!(
+            r#"
+            {{
+              subjectRoleAssignments(
+                tenantId: "{tenant_id}",
+                subjectKind: group,
+                subjectId: "{group_id}",
+                derivedKind: "composite"
+              ) {{
+                total
+                items {{
+                  policy {{ subjectKind subjectId grantId }}
+                  role {{ id name derivedKind childRoles {{ id }} }}
+                }}
+              }}
+            }}
+            "#
+        )))
+        .await;
+    assert!(listed.errors.is_empty(), "{:?}", listed.errors);
+    let data = listed.data.into_json().expect("json data");
+    let assignments = &data["subjectRoleAssignments"];
+    assert_eq!(assignments["total"], 1);
+    assert_eq!(
+        assignments["items"][0]["role"]["id"],
+        composite_role_id.to_string()
+    );
+    assert_eq!(assignments["items"][0]["role"]["derivedKind"], "composite");
+    assert_eq!(
+        assignments["items"][0]["role"]["childRoles"][0]["id"],
+        simple_role_id.to_string()
+    );
+
+    let checked = schema
+        .execute(authed_as(
+            user_id,
+            format!(
+                r#"
+                mutation {{
+                  authzCheck(input: {{
+                    subjectId: "{user_id}",
+                    action: "read",
+                    objectKind: "group",
+                    objectId: "{group_id}"
+                  }}) {{
+                    allowed
+                    reason
+                  }}
+                }}
+                "#
+            ),
+        ))
+        .await;
+    assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+    let data = checked.data.into_json().expect("json data");
+    assert_eq!(data["authzCheck"]["allowed"], true);
+}
+
+#[tokio::test]
+#[ignore]
+async fn create_policy_rejects_cross_tenant_role_assignment() {
+    let pool = common::pool().await;
+    let tenant_a = tenant(&pool).await;
+    let tenant_b = tenant(&pool).await;
+    let group_id = tenant_group(&pool, tenant_a).await;
+    let foreign_role_id = scoped_role(
+        &pool,
+        tenant_b,
+        "foreign-role",
+        "tenant",
+        &tenant_b.to_string(),
+    )
+    .await;
+    let schema = build_schema(state(pool));
+
+    let response = schema
+        .execute(authed(format!(
+            r#"
+            mutation {{
+              createPolicy(input: {{
+                tenantId: "{tenant_a}",
+                subjectKind: group,
+                subjectId: "{group_id}",
+                grantKind: role,
+                grantId: "{foreign_role_id}",
+                scopeKind: tenant,
+                scopeRef: "{tenant_a}",
+                effect: allow
+              }}) {{
+                id
+              }}
+            }}
+            "#
+        )))
+        .await;
+
+    assert!(!response.errors.is_empty());
+    assert!(response.errors[0]
+        .message
+        .contains("role from another tenant"));
 }
 
 #[tokio::test]
