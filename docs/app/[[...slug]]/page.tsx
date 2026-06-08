@@ -12,6 +12,7 @@ import { Card, Cards } from 'fumadocs-ui/components/card';
 import { Callout } from 'fumadocs-ui/components/callout';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import type { Metadata } from 'next';
+import { Mermaid } from '@/components/mermaid';
 
 const mdxComponents = {
   ...defaultMdxComponents,
@@ -20,6 +21,7 @@ const mdxComponents = {
   Card,
   Cards,
   Callout,
+  Mermaid,
   Tab,
   Tabs,
 };

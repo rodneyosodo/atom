@@ -1,4 +1,4 @@
 {
   "title": "Authentication",
-  "pages": ["index", "credentials", "jwt", "jwks"]
+  "pages": ["index", "credentials", "certificates", "jwt", "jwks"]
 }

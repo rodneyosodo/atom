@@ -9,7 +9,7 @@
     "bulk-check",
     "role-holders",
     "group-access",
-    "effective-capabilities",
+    "effective-actions",
     "admin-hygiene"
   ]
 }

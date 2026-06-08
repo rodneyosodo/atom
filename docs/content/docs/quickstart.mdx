@@ -1,12 +1,13 @@
 ---
 title: Quickstart
-description: Get Atom running and make your first authorization check in five minutes.
+description: Get Atom running and make your first authorization check.
 ---
 
 ## Prerequisites
 
 - Docker and Docker Compose
-- Rust toolchain (`cargo`)
+- Rust toolchain
+- `jq` for command examples
 
 ## Steps
 
@@ -16,25 +17,27 @@ description: Get Atom running and make your first authorization check in five mi
 ### Start Postgres
 
 ```bash
-docker-compose up postgres -d
+docker compose up postgres -d
 ```
 
 </Step>
 <Step>
 
-### Configure environment
+### Configure Atom
 
 ```bash
 cp .env.example .env
-# Edit .env — set ADMIN_SECRET to bootstrap the admin password
 ```
 
-Minimum required variables:
+Set at least:
 
 | Variable | Description |
 |---|---|
-| `DATABASE_URL` | Postgres connection string |
-| `ADMIN_SECRET` | Initial password for the `atom-admin` entity (first boot only) |
+| `DATABASE_URL` | Postgres connection string. |
+| `JWT_SECRET` | 32+ character secret for JWT compatibility paths. |
+| `ADMIN_SECRET` | Initial password for `atom-admin` on first boot. |
+
+If certificates are enabled, mount issuer CA files as described in [Certificates](/authentication/certificates).
 
 </Step>
 <Step>
@@ -45,19 +48,12 @@ Minimum required variables:
 cargo run
 ```
 
-Migrations apply automatically on startup. On first boot, the admin entity is seeded and the initial ES256 signing key is generated.
-
-```
-INFO atom: migrations applied
-INFO atom: generated initial signing key kid=...
-INFO atom: admin password bootstrapped
-INFO atom: atom listening on 0.0.0.0:8080
-```
+Atom applies migrations automatically.
 
 </Step>
 <Step>
 
-### Log in as admin
+### Log In
 
 ```bash
 TOKEN=$(curl -s -X POST http://localhost:8080/auth/login \
@@ -69,80 +65,160 @@ TOKEN=$(curl -s -X POST http://localhost:8080/auth/login \
 </Step>
 <Step>
 
-### Create an entity
+### Create A Tenant, Device, And Channel
+
+Use GraphQL at `POST /graphql`.
 
 ```bash
-DEVICE_ID=$(curl -s -X POST http://localhost:8080/entities \
+curl -s http://localhost:8080/graphql \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"kind": "device", "name": "sensor-01"}' \
-  | jq -r .id)
+  -d '{
+    "query": "mutation { createTenant(input: { name: \"factory-a\", route: \"factory-a\" }) { id name route } }"
+  }'
+```
+
+Create an entity for a device:
+
+```graphql
+mutation {
+  createEntity(input: {
+    kind: device
+    name: "meter-001"
+  }) {
+    id
+    name
+    kind
+  }
+}
+```
+
+Create a channel resource:
+
+```graphql
+mutation {
+  createResource(input: {
+    kind: "channel"
+    name: "telemetry"
+  }) {
+    id
+    kind
+    name
+  }
+}
 ```
 
 </Step>
 <Step>
 
-### Create a resource and check authorization
+### Give Publish Access
 
-```bash
-# Register a resource
-CHANNEL_ID=$(curl -s -X POST http://localhost:8080/resources \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"kind": "channel", "name": "telemetry"}' \
-  | jq -r .id)
+Find the seeded `publish` action:
 
-# Find the publish capability ID
-PUB_CAP=$(curl -s http://localhost:8080/capabilities \
-  -H "Authorization: Bearer $TOKEN" \
-  | jq -r '.items[] | select(.name=="publish") | .id')
+```graphql
+{
+  actions(objectKind: "resource", objectType: "resource:channel") {
+    items {
+      id
+      name
+    }
+  }
+}
+```
 
-# Create a role
-ROLE_ID=$(curl -s -X POST http://localhost:8080/roles \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"name": "channel-publisher"}' | jq -r .id)
+Create a permission block for the channel:
 
-# Assign capability to role
-curl -s -X POST http://localhost:8080/roles/$ROLE_ID/capabilities \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d "{\"capability_id\": \"$PUB_CAP\"}"
+```graphql
+mutation {
+  createPermissionBlock(input: {
+    scopeMode: "object"
+    objectId: "channel-resource-id"
+    effect: allow
+    actionIds: ["publish-action-id"]
+  }) {
+    id
+    effect
+    actions { name }
+  }
+}
+```
 
-# Bind role to device over all channels
-curl -s -X POST http://localhost:8080/policies \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d "{
-    \"subject_kind\": \"entity\",
-    \"subject_id\":   \"$DEVICE_ID\",
-    \"grant_kind\":   \"role\",
-    \"grant_id\":     \"$ROLE_ID\",
-    \"scope_kind\":   \"resource_kind\",
-    \"scope_ref\":    \"channel\"
-  }"
+Create a role and attach the permission block:
 
-# Check authorization
-curl -s -X POST http://localhost:8080/authz/check \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d "{
-    \"subject_id\":  \"$DEVICE_ID\",
-    \"action\":      \"publish\",
-    \"resource_id\": \"$CHANNEL_ID\"
-  }"
-# → {"allowed": true, "reason": "allowed"}
+```graphql
+mutation {
+  createRole(input: {
+    name: "channel-publisher"
+    description: "Can publish telemetry"
+  }) {
+    id
+    name
+  }
+}
+```
+
+```graphql
+mutation {
+  replaceRolePermissionBlocks(
+    roleId: "role-id"
+    permissionBlockIds: ["permission-block-id"]
+  )
+}
+```
+
+Assign the role to the device:
+
+```graphql
+mutation {
+  createRoleAssignment(input: {
+    subjectKind: entity
+    subjectId: "device-entity-id"
+    roleId: "role-id"
+  }) {
+    id
+    subjectId
+    roleId
+  }
+}
+```
+
+</Step>
+<Step>
+
+### Check Authorization
+
+```graphql
+mutation {
+  authzCheck(input: {
+    subjectId: "device-entity-id"
+    action: "publish"
+    resourceId: "channel-resource-id"
+  }) {
+    allowed
+    reason
+  }
+}
+```
+
+Expected result:
+
+```json
+{
+  "allowed": true,
+  "reason": "allowed"
+}
 ```
 
 </Step>
 </Steps>
 
-## What just happened
+## What Just Happened
 
-1. You created a `device` entity (`sensor-01`).
-2. You registered a `channel` resource (`telemetry`).
-3. You created a `channel-publisher` role bundling the `publish` capability.
-4. You bound that role to the device, scoped to all resources of kind `channel`.
-5. The PDP evaluated the check and found a matching allow policy.
+1. You created an entity for a device.
+2. You created a resource for a channel.
+3. You created a permission block that allows `publish` on that channel.
+4. You put the permission block inside a role.
+5. You assigned the role to the device.
+6. Atom returned allow when asked whether the device can publish.
 
-See [Access Control](/access-control) for a full explanation of the policy model.
+See [Atom In Simple Words](/simple-words) for the layman explanation, and [Access Control](/access-control) for the full model.

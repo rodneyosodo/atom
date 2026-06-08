@@ -1,149 +1,70 @@
 ---
-title: RBAC
-description: Role-Based Access Control using capabilities and roles.
+title: Roles
+description: Role-based access using permission blocks and assignments.
 ---
 
-RBAC in Atom works through two concepts: **capabilities** (atomic permissions) and **roles** (named bundles of capabilities). A policy binding attaches a role (or capability) to a subject over a scope.
+Roles are the normal way to give access in Atom.
 
-## Capabilities
+A role is a friendly name for one or more permission blocks. A role assignment gives that role to an entity or principal group.
 
-A capability represents a single permitted action, optionally scoped to a resource kind.
+## Example
 
-```json
-{
-  "id": "...",
-  "name": "publish",
-  "resource_kind": null,
-  "description": "Publish messages to a resource"
-}
+```text
+Tenant: factory-a
+
+Object Group: Plant-A
+  channel telemetry
+  client meter-001
+
+Role: Plant-A Publisher
+  Permission Block:
+    Scope: channels inside Plant-A
+    Actions: read, publish
+    Effect: allow
+
+Assignment:
+  Give Plant-A Publisher to meter-001
 ```
 
-`resource_kind = null` means the capability applies to all resource kinds. You can create kind-specific capabilities (e.g. a `publish` that only makes sense for `channel` resources) if your model requires it.
+That means `meter-001` can read and publish to channels covered by the Plant-A permission block.
 
-### Seeded capabilities
+## Role Parts
 
-Atom seeds the following capabilities on first boot (all with `resource_kind = null`):
-
-| Name | Meaning |
+| Part | Meaning |
 |---|---|
-| `read` | Read / view |
-| `write` | Create or update |
-| `delete` | Delete |
-| `publish` | Publish messages |
-| `subscribe` | Subscribe to messages |
-| `execute` | Execute a command or action |
-| `manage` | Full administrative control |
+| Role | Name shown to operators, such as `Plant-A Publisher`. |
+| Permission Block | The actual rule attached to the role. |
+| Role Assignment | The row that gives the role to an entity or principal group. |
 
-<Callout type="info">
-`manage` with `scope_kind = all` is the admin permission. The seeded `atom-admin` role grants `manage` over all resources to the `atom-admin` entity.
-</Callout>
+## Principal Groups
 
-## Roles
+Use principal groups when many subjects should receive the same role.
 
-A role is a named collection of capabilities.
+```text
+Principal Group: Field Devices
+  meter-001
+  meter-002
+  meter-003
 
-```bash
-# Create a role
-ROLE_ID=$(curl -s -X POST http://localhost:8080/roles \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"name": "channel-publisher", "description": "Can publish to any channel"}' \
-  | jq -r .id)
-
-# Add capabilities to the role
-curl -s -X POST http://localhost:8080/roles/$ROLE_ID/capabilities \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d "{\"capability_id\": \"$PUBLISH_CAP_ID\"}"
+Assignment:
+  Give Plant-A Publisher to Field Devices
 ```
 
-## Policy bindings
+Each member receives the role through the group. Removing a device from the group removes that inherited access.
 
-A policy binding connects a subject to a role (or capability) over a scope.
+## Object Groups
 
-### Scope options
+Use object groups when one rule should apply to many protected objects.
 
-| `scope_kind` | `scope_ref` | Meaning |
-|---|---|---|
-| `all` | (empty) | Applies to all resources |
-| `resource_kind` | e.g. `"channel"` | Applies to all resources of this kind |
-| `resource` | a resource UUID | Applies to one specific resource |
-
-### Example: device can publish to all channels
-
-```bash
-curl -X POST http://localhost:8080/policies \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d "{
-    \"subject_kind\": \"entity\",
-    \"subject_id\":   \"$DEVICE_ID\",
-    \"grant_kind\":   \"role\",
-    \"grant_id\":     \"$ROLE_ID\",
-    \"scope_kind\":   \"resource_kind\",
-    \"scope_ref\":    \"channel\",
-    \"effect\":       \"allow\"
-  }"
+```text
+Object Group: Plant-A
+  channel telemetry
+  channel alerts
+  client meter-001
 ```
 
-### Example: service can manage a specific workspace
+A permission block can target direct objects in the group, descendant objects, child groups, or descendant groups.
 
-```bash
-curl -X POST http://localhost:8080/policies \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d "{
-    \"subject_kind\": \"entity\",
-    \"subject_id\":   \"$SERVICE_ID\",
-    \"grant_kind\":   \"capability\",
-    \"grant_id\":     \"$MANAGE_CAP_ID\",
-    \"scope_kind\":   \"resource\",
-    \"scope_ref\":    \"$WORKSPACE_ID\",
-    \"effect\":       \"allow\"
-  }"
-```
+## Admin Access
 
-## Group-based RBAC
-
-Assign a role to a group, and all members inherit it:
-
-```bash
-# Create group
-GROUP_ID=$(curl -s -X POST http://localhost:8080/groups \
-  -d '{"name": "floor-sensors"}' ... | jq -r .id)
-
-# Add devices to group
-curl -X POST http://localhost:8080/groups/$GROUP_ID/members \
-  -d "{\"entity_id\": \"$DEVICE_ID\"}"
-
-# Bind role to group
-curl -X POST http://localhost:8080/policies \
-  -d "{
-    \"subject_kind\": \"group\",
-    \"subject_id\":   \"$GROUP_ID\",
-    \"grant_kind\":   \"role\",
-    \"grant_id\":     \"$ROLE_ID\",
-    \"scope_kind\":   \"resource_kind\",
-    \"scope_ref\":    \"channel\"
-  }"
-```
-
-Any entity added to `floor-sensors` will immediately have the `publish` permission on channels.
-
-## Explicit deny
-
-To block a specific entity even when they are in a group with an allow binding:
-
-```bash
-curl -X POST http://localhost:8080/policies \
-  -d "{
-    \"subject_kind\": \"entity\",
-    \"subject_id\":   \"$SUSPENDED_DEVICE\",
-    \"grant_kind\":   \"role\",
-    \"grant_id\":     \"$ROLE_ID\",
-    \"scope_kind\":   \"all\",
-    \"effect\":       \"deny\"
-  }"
-```
-
-This deny binding wins regardless of any allow bindings for this entity.
+Platform administrators use permission blocks with broad scopes and management actions. Tenant administrators use tenant-scoped permission blocks. The same evaluation engine handles both.

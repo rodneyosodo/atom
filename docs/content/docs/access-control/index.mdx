@@ -1,58 +1,58 @@
 ---
 title: Access Control
-description: Atom's unified policy model supports RBAC, ABAC, and hybrid combinations.
+description: How Atom decides what each entity is allowed to do.
 ---
 
-Atom uses a single primitive — the **policy binding** — to express all authorization rules. RBAC and ABAC are not separate systems; they are two dimensions of the same binding.
+Atom answers one question:
 
-## Mental model
-
-Every authorization question has three parts:
-
-```
-Can subject S perform action A on resource R?
+```text
+Can subject S perform action A on object O?
 ```
 
-- **Subject** — an entity or group.
-- **Action** — a capability name (e.g. `publish`, `read`, `manage`).
-- **Resource** — a registered resource in the system.
+Example:
 
-A policy binding answers this by associating a subject with a grant (capability or role), scoped to a set of resources, with an optional set of ABAC conditions.
-
-## The policy binding
-
-```
-PolicyBinding {
-  subject:    entity | group
-  grant:      capability | role
-  scope:      all | resource_kind | resource
-  effect:     allow | deny
-  conditions: { dot-path → expected-value, ... }
-}
+```text
+Can device meter-001 publish to channel telemetry?
 ```
 
-This single structure covers:
+## The Model
 
-| Use case | How |
+```text
+Subject gets a Role.
+Role contains Permission Blocks.
+Direct Policy gives a Subject one Permission Block directly.
+Permission Block is the only place where scope and actions are defined.
+```
+
+## Vocabulary
+
+| Term | Meaning |
 |---|---|
-| RBAC | `grant_kind = role`, no conditions |
-| ABAC | `grant_kind = capability`, with conditions |
-| RBAC + ABAC | `grant_kind = role`, with conditions |
-| Explicit deny | `effect = deny` |
+| Subject | Entity or principal group receiving access. |
+| Action | Operation name such as `read`, `publish`, `subscribe`, or `manage`. |
+| Action Applicability | Valid action/object pair, such as `publish` on `resource:channel`. |
+| Permission Block | Scope, actions, effect, and optional conditions. |
+| Role | Friendly name for a set of permission blocks. |
+| Role Assignment | Gives a role to an entity or principal group. |
+| Direct Policy | Gives one permission block directly to an entity or principal group. |
+| Principal Group | Who-container. Members receive role assignments through the group. |
+| Object Group | Where-container. Permission blocks can target objects inside it. |
 
-## Evaluation rules
+## Core Rules
 
-1. **DENY overrides ALLOW** — if any matching binding has `effect = deny`, the request is denied regardless of allow bindings.
-2. **Default deny** — no matching allow binding means denied.
-3. **Group inheritance** — bindings on a group apply to all current group members.
+- Deny overrides allow.
+- No matching allow means denied.
+- Tokens do not contain permissions.
+- Scope and actions live in permission blocks.
+- Role assignments do not define scope.
+- Direct policies do not redefine scope.
+- Groups do not grant access by themselves; assignments and permission blocks do.
 
-See [PDP Evaluation](/access-control/evaluation) for the full algorithm.
-
-## Sections
+## Where To Go Next
 
 <Cards>
-  <Card title="RBAC" href="/access-control/rbac" description="Roles, capabilities, and role-based policy bindings." />
-  <Card title="ABAC" href="/access-control/abac" description="Attribute conditions layered on top of any binding." />
-  <Card title="Policy Bindings" href="/access-control/policies" description="Complete field reference for policy bindings." />
-  <Card title="PDP Evaluation" href="/access-control/evaluation" description="Step-by-step decision algorithm with examples." />
+  <Card title="Roles" href="/access-control/rbac" description="How named roles bundle permission blocks." />
+  <Card title="Conditions" href="/access-control/abac" description="How JSON conditions narrow a permission block." />
+  <Card title="Permission Blocks" href="/access-control/policies" description="The source of scope, actions, allow, deny, and conditions." />
+  <Card title="Evaluation" href="/access-control/evaluation" description="How Atom turns the model into an allow or deny answer." />
 </Cards>

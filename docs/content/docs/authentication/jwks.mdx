@@ -66,7 +66,7 @@ At any point in time:
 
 ## Key rotation
 
-Rotation requires the `manage` capability with `scope = all`.
+Rotation requires a permission block that allows `manage` on signing keys or platform management scope.
 
 ```bash
 curl -X POST http://localhost:8080/auth/keys/rotate \

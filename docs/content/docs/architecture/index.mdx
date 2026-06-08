@@ -3,99 +3,93 @@ title: Architecture
 description: System design, module structure, and core design decisions.
 ---
 
-## System overview
+Atom is a single Rust service backed by one Postgres database. It centralizes identity, credentials, authorization, certificates, and audit history.
 
-```
-┌─────────────────────────────────────────────┐
-│                   Atom                       │
-│                                             │
-│  ┌──────────────┐    ┌────────────────────┐ │
-│  │   Identity   │    │   Authorization    │ │
-│  │   Module     │    │   Module           │ │
-│  │              │    │                    │ │
-│  │ entities     │    │ resources          │ │
-│  │ credentials  │    │ capabilities       │ │
-│  │ sessions     │    │ roles              │ │
-│  │ groups       │    │ policy_bindings    │ │
-│  │ ownerships   │    │ PDP engine         │ │
-│  └──────────────┘    └────────────────────┘ │
-│                                             │
-│  ┌─────────────────────────────────────────┐│
-│  │          PostgreSQL (single DB)         ││
-│  └─────────────────────────────────────────┘│
-└─────────────────────────────────────────────┘
-```
+## System Diagram
 
-Atom is a single HTTP service backed by a single Postgres database. There are no external dependencies, no message queues, no caches required for correctness.
+<Mermaid chart={`flowchart LR
+  subgraph callers[Callers]
+    ui[Atom UI]
+    api[Admin or App API]
+    runtime[Runtime services such as FluxMQ]
+    mtls[mTLS clients]
+  end
 
-## Module structure
+  subgraph atom[Atom service]
+    http[HTTP and GraphQL]
+    grpc[gRPC runtime API]
+    identity[Identity and credentials]
+    authz[Authorization engine]
+    certs[Certificate service]
+    audit[Audit writer]
+  end
 
-### Identity module (`src/identity/`)
+  subgraph storage[State]
+    db[(Postgres)]
+    files[Mounted issuer CA files]
+  end
 
-Manages all principals and their authentication:
+  ui --> http
+  api --> http
+  runtime --> grpc
+  mtls --> runtime
+  http --> identity
+  http --> authz
+  http --> certs
+  grpc --> authz
+  grpc --> certs
+  identity --> db
+  authz --> db
+  certs --> db
+  certs --> files
+  audit --> db
+`} />
 
-- **Entities** — the universal principal type. Kind values: `human`, `device`, `service`, `workload`, `application`.
-- **Credentials** — password (argon2-hashed) and API key (format `atom_<id>_<secret>`, secret argon2-hashed).
-- **Sessions** — created on login, referenced by the JWT `sid` claim. Revokable.
-- **Groups** — named collections of entities, used as policy subjects.
-- **Ownerships** — parent–child relationships between entities.
+**What this means:** applications and operators talk to Atom through HTTP, GraphQL, or gRPC. Atom stores normal state in Postgres. Certificate issuer keys are mounted as files and loaded by Atom; they are not stored in the database.
 
-### Authorization module (`src/authz/`)
+## Main Parts
 
-Manages protected resources and evaluates access:
+| Part | Job |
+|---|---|
+| Identity | Stores entities such as users, devices, services, workloads, and applications. |
+| Credentials | Stores password hashes, API key hashes, and issued certificate records. |
+| Authorization | Answers live access questions using actions, permission blocks, roles, assignments, direct policies, groups, and conditions. |
+| Certificates | Issues certificates, signs CSRs, revokes certificates, serves CA chain/CRL/OCSP, and resolves runtime certificate identity. |
+| Audit | Records important security events without blocking the main request. |
+| API Endpoint Builder | Lets admins expose controlled custom HTTP endpoints backed by Atom GraphQL. |
 
-- **Resources** — anything protected by authorization: channels, devices, workspaces, secrets.
-- **Capabilities** — atomic permission names (`read`, `write`, `publish`, `subscribe`, `execute`, `manage`, `delete`).
-- **Roles** — named bundles of capabilities.
-- **Policy bindings** — the core authorization primitive, binding a subject to a grant over a scope.
-- **PDP engine** (`src/authz/engine.rs`) — evaluates `POST /authz/check` requests.
+## Request Layers
 
-## Layered architecture
+Every request follows the same shape:
 
-Every request flows through three layers:
-
-```
-HTTP Request
-     │
-     ▼
-┌─────────────┐
-│   Handler   │  – HTTP concerns only: extract params, call service/engine, return response
-└──────┬──────┘
-       │
-       ▼
-┌─────────────┐
-│Service/Engine│ – Business logic, validation, audit writes
-└──────┬──────┘
-       │
-       ▼
-┌─────────────┐
-│    Repo     │  – SQL queries only, returns domain types
-└─────────────┘
+```text
+Handler -> Service or Engine -> Repository -> Postgres
 ```
 
-Handlers never touch SQL. Repos never contain business logic. Cross-cutting concerns (auth extraction, error mapping) live in `src/auth.rs` and `src/error.rs`.
+Handlers deal with HTTP, GraphQL, or gRPC details. Services and engines contain business rules. Repositories run SQL and return domain types.
 
-## AppState
+## Online Authorization
 
-```rust
-pub struct AppState {
-    pub pool:   PgPool,
-    pub config: Config,
-    pub keys:   Arc<RwLock<ActiveKeys>>,
-}
-```
+Tokens prove identity only. They do not contain permissions.
 
-`AppState` is cheaply cloned into every Axum handler via the `State` extractor. The `pool` is an Arc-wrapped connection pool internally. `keys` is an `Arc<RwLock<ActiveKeys>>` — the live signing key store, updated in-place on key rotation without a restart.
+When a service needs an access decision, it asks Atom at runtime. Atom checks the current database state and returns allow or deny. That means role changes, revocations, and deny rules take effect without issuing a new token.
 
-## Online authorization
+## Certificate Issuer Files
 
-Tokens in Atom carry **no permissions**. A JWT proves identity (who) and references a session (revocable). Authorization (whether an entity may perform an action on a resource) is always evaluated at runtime by the PDP.
+When certificate support is enabled, Atom loads CA material during startup:
 
-This means:
-- Policy changes take effect immediately — no token reissuance needed.
-- Revoking a session immediately invalidates all tokens issued for it.
-- External services can check authorization by calling `POST /authz/check` rather than decoding token claims.
+- production: root certificate, intermediate certificate, and intermediate private key;
+- local/dev: root certificate and root private key.
 
-## Audit log
+The loaded issuer signs leaf certificates, CRLs, and OCSP responses. Issued leaf certificates are stored as credential rows. Leaf private keys generated by Atom are returned once and never stored.
 
-Every significant event (login attempt, credential creation, authorization decision) writes a row to `audit_logs`. The write is fire-and-forget — a failure never blocks the primary operation.
+## Deployment Shape
+
+Atom is intentionally small:
+
+- one binary;
+- one Postgres database;
+- optional Next.js UI;
+- optional mounted CA files for certificate issuance;
+- no OpenBao;
+- no separate Magistrala certificate service.

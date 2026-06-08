@@ -3,7 +3,9 @@ title: Authentication
 description: Token types, credential management, and how authentication works in Atom.
 ---
 
-Atom supports two token types, both passed as a Bearer token in the `Authorization` header:
+Atom supports JWTs, API keys, and mTLS certificates.
+
+JWTs and API keys are passed as Bearer tokens in the `Authorization` header:
 
 ```
 Authorization: Bearer <token>
@@ -13,6 +15,8 @@ Authorization: Bearer <token>
 |---|---|---|
 | JWT | `eyJ...` | Short-lived (default 1h), returned by `/auth/login` |
 | API key | `atom_...` | Long-lived, created per entity, optional expiry |
+
+Certificates are used during mTLS. Runtime services resolve certificate identity through Atom gRPC.
 
 ## Public endpoints
 
@@ -29,6 +33,9 @@ GET  /auth/oauth/:provider/start
 GET  /auth/oauth/:provider/callback
 POST /auth/oauth/exchange
 GET  /.well-known/jwks.json
+GET  /certs/ca-chain
+GET  /certs/crl
+POST /certs/ocsp
 ```
 
 All other endpoints require a valid Bearer token. Public signup creates a
@@ -39,7 +46,8 @@ grant platform privileges.
 ## Sections
 
 <Cards>
-  <Card title="Credentials" href="/authentication/credentials" description="Password and API key credential management." />
+  <Card title="Credentials" href="/authentication/credentials" description="Password, API key, and certificate credential management." />
+  <Card title="Certificates" href="/authentication/certificates" description="mTLS certificate issuance, CA files, CRL, OCSP, and runtime lookup." />
   <Card title="JWT Tokens" href="/authentication/jwt" description="Token claims, session binding, and verification." />
   <Card title="JWKS & Key Rotation" href="/authentication/jwks" description="ES256 signing keys, JWKS endpoint, and zero-downtime rotation." />
 </Cards>

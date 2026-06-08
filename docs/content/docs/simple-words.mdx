@@ -1,0 +1,113 @@
+---
+title: Atom In Simple Words
+description: A plain-language explanation of what Atom is and how it works.
+---
+
+Atom is one place that knows:
+
+- who exists;
+- how they prove who they are;
+- what they are allowed to do.
+
+In Magistrala terms, Atom is the security brain behind domains, users, clients, channels, roles, credentials, and certificates.
+
+## The Short Version
+
+Think of a factory gate.
+
+1. The gate has a list of known people, devices, and services.
+2. Each one has a way to prove its identity, such as a password, API key, or certificate.
+3. The gate has rules that say what each one may do.
+4. Every time someone tries to enter or use something, the gate checks the live rules.
+
+That gate is Atom.
+
+Atom does not just create users. It also answers runtime questions such as:
+
+```text
+Can device meter-001 publish to channel telemetry?
+Can Alice manage this tenant?
+Can this certificate still identify this client?
+```
+
+## Glossary
+
+| Atom term | Simple meaning | Magistrala example |
+|---|---|---|
+| Tenant | Top boundary for a customer, domain, or workspace | Domain `factory-a` |
+| Entity | Anything that can log in or receive access | User `alice`, device `meter-001`, service `fluxmq-auth` |
+| Resource | Something protected by access rules | Channel `telemetry`, rule `temperature-alert` |
+| Credential | A way an entity proves who it is | Password, API key, certificate |
+| Action | One operation someone wants to do | `read`, `publish`, `subscribe`, `manage` |
+| Permission Block | The actual access rule: where, what actions, allow or deny | Channels in Plant-A can be published to |
+| Role | A friendly name for a set of permission blocks | `Plant-A Publisher` |
+| Role Assignment | Gives a role to an entity or group | Give `Plant-A Publisher` to `meter-001` |
+| Direct Policy | Gives one permission block directly without a role | Allow one service to publish to one channel |
+| Principal Group | A group of identities that should receive the same role | Field devices |
+| Object Group | A group of protected objects that access applies to | Plant-A clients and channels |
+| Audit Log | History of important security events | Login failed, credential created, access denied |
+
+## Login Flow
+
+<Mermaid chart={`sequenceDiagram
+  actor PersonOrDevice as User or Device
+  participant App as App or Runtime Service
+  participant Atom as Atom
+  participant DB as Postgres
+
+  PersonOrDevice->>App: Sends username/device id and secret
+  App->>Atom: Login or authenticate request
+  Atom->>DB: Find entity and credential
+  DB-->>Atom: Stored hash and entity status
+  Atom->>Atom: Verify secret and create session
+  Atom-->>App: JWT/session or authentication result
+  App-->>PersonOrDevice: Access can continue
+`} />
+
+**What this means:** a user, device, or service proves its identity with a secret. Atom checks that secret against the database. If it is valid and the entity is active, Atom returns an authenticated session or runtime authentication result.
+
+## Authorization In One Sentence
+
+Authorization means Atom answers this question:
+
+```text
+Can this subject perform this action on this object right now?
+```
+
+For example:
+
+```text
+Can meter-001 publish to telemetry?
+```
+
+Atom checks roles, direct policies, principal groups, object groups, deny rules, and optional conditions. Tokens do not carry permissions. The decision is checked live, so changes take effect immediately.
+
+## Certificates In One Sentence
+
+Certificates are another kind of credential.
+
+Atom can issue a certificate for an entity, store the issued certificate as a credential row, and later resolve that certificate back to the entity during mTLS runtime traffic.
+
+The CA private key is not stored in Postgres. The platform operator mounts CA files into Atom.
+
+## How Magistrala Uses Atom
+
+Magistrala uses Atom's generic objects:
+
+| Magistrala | Atom |
+|---|---|
+| Domain | Tenant |
+| User | Entity with `kind = human` |
+| Client | Entity with `kind = device` or `service` |
+| Channel | Resource with `kind = channel` |
+| Client key | Password credential or API key credential |
+| Client certificate | Certificate credential |
+| Client-channel access | Role assignment or direct policy |
+
+Runtime services such as FluxMQ ask Atom whether a client is authenticated and whether it can publish or subscribe. Atom returns the decision; Magistrala keeps handling messages, storage, and application behavior.
+
+## What Atom Does Not Do
+
+Atom does not store telemetry messages, run device protocols, or replace application logic. It owns identity, credentials, access decisions, certificates, and audit history.
+
+That split keeps security centralized while letting applications stay focused on their own domain.

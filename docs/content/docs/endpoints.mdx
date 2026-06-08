@@ -76,13 +76,13 @@ Only `active` endpoints are matched when a request arrives. Transitions: `draft`
 
 ### `caller_context`
 
-The GraphQL operation runs as the authenticated caller. The caller's entity ID, tenant, and capabilities determine what the operation can access — identical to calling the GraphQL API directly.
+The GraphQL operation runs as the authenticated caller. The caller's entity ID, tenant, roles, direct policies, and permission blocks determine what the operation can access, identical to calling the GraphQL API directly.
 
 Use this for endpoints where access should be limited to what the caller is already allowed to do.
 
 ### `service_context`
 
-The GraphQL operation runs as the specified `serviceEntityId` entity, regardless of who the HTTP caller is. The caller still needs `execute` capability on the endpoint itself, but the underlying GraphQL operation is authorised by the service entity's capabilities.
+The GraphQL operation runs as the specified `serviceEntityId` entity, regardless of who the HTTP caller is. The caller still needs `execute` access on the endpoint itself, but the underlying GraphQL operation is authorized by the service entity's current permissions.
 
 Use this for privileged operations that should be available to less-privileged callers — for example, a device registering itself through an endpoint that internally calls `createEntity` using an admin service account.
 
@@ -90,11 +90,11 @@ Use this for privileged operations that should be available to less-privileged c
 
 ---
 
-## Caller capability requirement
+## Caller action requirement
 
-Regardless of `authMode`, the HTTP caller must hold one of the following capabilities before the endpoint executes:
+Regardless of `authMode`, the HTTP caller must hold one of the following actions before the endpoint executes:
 
-| Capability | Scope |
+| Action | Scope |
 |------------|-------|
 | `execute` | `Object(<endpointId>)` — granted directly on this endpoint |
 | `manage` | `Object(<endpointId>)` |
@@ -439,7 +439,7 @@ Content-Type: application/json
 |---------|-------|-----|
 | Field values are literal strings like `"$body.name"` | `variablesMapping` uses nested objects instead of dotted keys | Use `"input.name": "$body.name"` not `"input": { "name": "$body.name" }` |
 | 404 on a valid path | Endpoint is `draft` or `disabled` | Set status to `active` |
-| 403 on execution | Caller lacks `execute` or `manage` capability | Grant `execute` on the endpoint object or its tenant scope |
+| 403 on execution | Caller lacks `execute` or `manage` access | Grant `execute` on the endpoint object or its tenant scope |
 | 400 "GraphQL execution failed" | The GraphQL operation returned errors | Check `apiEndpointExecutions` for the `error` field |
 | 400 "request body failed requestSchema validation" | Body doesn't match `requestSchema` | Fix the request or relax the schema |
 | 400 "custom endpoint execution timed out" | Operation took longer than 5 seconds | Simplify the GraphQL operation |

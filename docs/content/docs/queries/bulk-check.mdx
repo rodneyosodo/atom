@@ -51,4 +51,4 @@ Each key in `results` maps to the same `{allowed, reason}` shape as `POST /authz
 
 ## Performance
 
-Entity, resource, and policy bindings are loaded **once**. Each action is evaluated against the same binding set. This turns N database round-trips into 1-2 queries total.
+Entity, resource, role assignments, direct policies, and permission blocks are loaded **once**. Each action is evaluated against the same resolved access set. This turns N database round-trips into a small fixed set of queries.

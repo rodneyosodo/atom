@@ -1,13 +1,13 @@
 ---
 title: Admin Hygiene
-description: Detect orphaned policies, unprotected resources, and expiring credentials.
+description: Detect orphaned access records, unprotected resources, and expiring credentials.
 ---
 
-Administrative endpoints for surfacing system health issues. All three require `RequireManage` — the caller must hold the `manage` capability with `scope_kind = all`.
+Administrative endpoints surface system health issues. They require management access through Atom's normal permission block model.
 
-## GET /admin/orphan-policies
+## Orphan Access Records
 
-Returns policy bindings where the referenced subject (entity or group) or grant (capability or role) no longer exists.
+Orphan access records are role assignments or direct policies where the referenced subject, role, or permission block no longer exists.
 
 ### Query parameters
 
@@ -23,14 +23,10 @@ Returns policy bindings where the referenced subject (entity or group) or grant 
   "items": [
     {
       "id": "p1-...",
+      "record_type": "role_assignment",
       "subject_kind": "entity",
       "subject_id": "aaa-...",
-      "grant_kind": "role",
-      "grant_id": "v1-...",
-      "scope_kind": "resource_kind",
-      "scope_ref": "channel",
-      "effect": "allow",
-      "conditions": {},
+      "role_id": "role-...",
       "created_at": "2026-03-15T12:00:00Z",
       "orphan_reason": "subject_not_found"
     }
@@ -43,14 +39,15 @@ Returns policy bindings where the referenced subject (entity or group) or grant 
 
 | Value | Meaning |
 |---|---|
-| `subject_not_found` | The referenced entity or group has been deleted |
-| `grant_not_found` | The referenced capability or role has been deleted |
+| `subject_not_found` | The referenced entity or principal group has been deleted |
+| `role_not_found` | The referenced role has been deleted |
+| `permission_block_not_found` | The referenced permission block has been deleted |
 
 ---
 
 ## GET /admin/unprotected-resources
 
-Returns resources that have **no policy bindings** covering them — not directly, not by kind, and not by a global `scope_kind = all` binding.
+Returns resources that have no permission block coverage through roles or direct policies.
 
 ### Query parameters
 
@@ -80,7 +77,7 @@ Returns resources that have **no policy bindings** covering them — not directl
 ```
 
 <Callout type="info">
-If any `scope_kind = all` policy binding exists in the system, every resource is covered and this endpoint returns an empty list.
+Very broad platform or tenant permission blocks can intentionally cover many resources. Review those before treating a resource as unprotected.
 </Callout>
 
 ---

@@ -5,6 +5,13 @@
 
 This document is supporting background for query and search requirements. The source of truth is [Atom Product Requirements Document](./PRD.md), and authorization terminology is defined in [Atom Access Model Simplification](./11-access-model-simplification.md).
 
+For non-technical onboarding and diagrams, use the rendered docs source:
+
+- [Atom in Simple Words](../docs/content/docs/simple-words.mdx)
+- [Architecture diagrams](../docs/content/docs/architecture/index.mdx)
+- [Certificate flow](../docs/content/docs/authentication/certificates.mdx)
+- [Magistrala on Atom](../docs/content/docs/magistrala-on-atom.mdx)
+
 ---
 
 ## Problem

@@ -1,125 +1,65 @@
 ---
-title: Policy Bindings
-description: Complete field reference for creating and managing policy bindings.
+title: Permission Blocks
+description: The access rule that defines scope, actions, effect, and conditions.
 ---
 
-A policy binding is the atomic unit of authorization in Atom. It declares: *subject* is granted *permission* over *scope*, with *effect*, under *conditions*.
+A permission block is the single source of access logic in Atom.
 
-## Endpoints
+It answers:
 
-```
-POST   /policies           Create a binding (RequireManage)
-GET    /policies           List bindings
-GET    /policies/:id       Get a binding
-DELETE /policies/:id       Delete a binding (RequireManage)
-```
-
-<Callout type="info">
-Creating and deleting policy bindings requires the `manage` capability with `scope_kind = all`. See [Self-Authorization](/architecture#self-authorization).
-</Callout>
-
-## Request body
-
-```json
-{
-  "subject_kind": "entity",
-  "subject_id":   "uuid",
-  "grant_kind":   "role",
-  "grant_id":     "uuid",
-  "scope_kind":   "resource_kind",
-  "scope_ref":    "channel",
-  "effect":       "allow",
-  "conditions":   {}
-}
+```text
+Where does this rule apply?
+Which actions are covered?
+Is this an allow or a deny?
+Are there extra conditions?
 ```
 
-## Field reference
+## Fields
 
-### `subject_kind`
-
-| Value | Meaning |
+| Field | Meaning |
 |---|---|
-| `entity` | The subject is a single entity identified by `subject_id` |
-| `group` | The subject is a group; all current members inherit this binding |
+| `tenantId` | Tenant boundary for the rule. |
+| `scopeMode` | How broad the rule is. |
+| `objectKind` | Protected object category, such as `tenant`, `entity`, `resource`, `credential`, or `api_endpoint`. |
+| `objectType` | More specific type, such as `resource:channel` or `entity:device`. |
+| `objectId` | Exact object ID when the rule targets one object. |
+| `groupId` | Object group ID when the rule targets objects in a group. |
+| `effect` | `allow` or `deny`. |
+| `conditions` | Optional flat JSON conditions. |
+| `actions` | Operation names covered by the rule. |
 
-### `subject_id`
+## Common Scope Modes
 
-UUID of the entity or group.
-
-### `grant_kind`
-
-| Value | Meaning |
+| Scope mode | Meaning |
 |---|---|
-| `capability` | `grant_id` is a capability UUID |
-| `role` | `grant_id` is a role UUID (grants all capabilities in that role) |
+| `platform` | Applies at platform level. |
+| `tenant` | Applies to the tenant/domain object. |
+| `object_kind` | Applies to all objects of one category. |
+| `object_type` | Applies to all objects of one type in a tenant. |
+| `object` | Applies to one exact object. |
+| `group` | Applies to the object group itself. |
+| `group_direct_objects` | Applies to objects directly inside an object group. |
+| `group_descendant_objects` | Applies to objects inside child or deeper object groups. |
+| `group_child_groups` | Applies to immediate child object groups. |
+| `group_descendant_groups` | Applies to child and deeper object groups. |
 
-### `grant_id`
+## Roles And Direct Policies
 
-UUID of the capability or role.
+A permission block can be used in two ways:
 
-### `scope_kind`
+- attach it to a role, then assign the role;
+- attach it directly to a subject with a direct policy.
 
-| Value | `scope_ref` | Meaning |
-|---|---|---|
-| `all` | omit / null | Applies to every resource in the system |
-| `resource_kind` | kind name (e.g. `"channel"`) | Applies to all resources of that kind |
-| `resource` | resource UUID (as string) | Applies to exactly one resource |
+Use roles for normal administration. Use direct policies for narrow runtime links or special security cases where a named role would add noise.
 
-### `scope_ref`
+## Deny Rules
 
-For `scope_kind = resource_kind`: the kind name string (e.g. `"channel"`, `"device"`).
-For `scope_kind = resource`: the resource UUID as a string.
-For `scope_kind = all`: omit or set to `null`.
+A deny permission block blocks access even when another permission block allows it.
 
-### `effect`
+Example:
 
-| Value | Meaning |
-|---|---|
-| `allow` | Grants the permission (default) |
-| `deny` | Explicitly denies the permission; overrides all allow bindings |
-
-### `conditions`
-
-An object where keys are dot-path expressions into the evaluation context and values are the expected values. All entries must match (AND logic).
-
-```json
-{
-  "entity.attributes.env": "prod",
-  "resource.attributes.classification": "public",
-  "context.ip_trusted": "true"
-}
-```
-
-Dot-path segments: `entity.attributes.<key>`, `resource.attributes.<key>`, `context.<key>`.
-
-Omit or set to `{}` for no conditions.
-
-## List query parameters
-
-```
-GET /policies?subject_id=<uuid>&subject_kind=entity&limit=20&offset=0
-```
-
-| Parameter | Type | Default | Notes |
-|---|---|---|---|
-| `subject_id` | uuid | — | Filter by subject |
-| `subject_kind` | string | — | Filter by subject kind |
-| `limit` | int | 20 | 1–100 |
-| `offset` | int | 0 | |
-
-## Response format
-
-```json
-{
-  "id": "...",
-  "subject_kind": "entity",
-  "subject_id": "...",
-  "grant_kind": "role",
-  "grant_id": "...",
-  "scope_kind": "resource_kind",
-  "scope_ref": "channel",
-  "effect": "allow",
-  "conditions": {},
-  "created_at": "2025-01-01T00:00:00Z"
-}
+```text
+Allow: Plant-A devices can publish to Plant-A channels.
+Deny: meter-001 cannot publish to channel alerts.
+Result: meter-001 is denied for alerts but still allowed for other Plant-A channels.
 ```

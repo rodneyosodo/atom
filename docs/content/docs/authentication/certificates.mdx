@@ -1,0 +1,91 @@
+---
+title: Certificates
+description: Atom-native certificate credentials, CA files, CRL, OCSP, and runtime lookup.
+---
+
+Certificates are credentials for machines. Instead of sending a password or API key, a client proves identity with a certificate during mTLS.
+
+Atom owns the certificate lifecycle for issued client certificates:
+
+- issue generated certificates;
+- sign CSRs;
+- renew certificates;
+- revoke certificates;
+- publish CA chain, CRL, and OCSP responses;
+- resolve a certificate back to an Atom entity for runtime services.
+
+## Certificate Flow
+
+<Mermaid chart={`flowchart TD
+  operator[Platform operator]
+  files[Mounted CA files]
+  atom[Atom certificate service]
+  entity[Atom entity]
+  credential[Certificate credential row]
+  client[Device or service]
+  runtime[Runtime service]
+  grpc[Atom gRPC CertificateService]
+
+  operator --> files
+  files --> atom
+  entity --> atom
+  atom --> credential
+  atom --> client
+  client --> runtime
+  runtime --> grpc
+  grpc --> credential
+  grpc --> entity
+`} />
+
+**What this means:** the operator mounts CA files. Atom uses them to issue a certificate for an entity. The issued certificate is stored as a credential row. Later, a runtime service receives an mTLS client certificate and asks Atom which entity it belongs to.
+
+## CA Files
+
+Atom does not store CA certificates or CA private keys in Postgres. It loads issuer files during startup.
+
+Production should use:
+
+```text
+ATOM_CERTS_CA_MODE=file_intermediate_issuer
+ATOM_CERTS_ROOT_CA_CERT_PATH=/certs/root-ca.crt
+ATOM_CERTS_INTERMEDIATE_CA_CERT_PATH=/certs/intermediate-ca.crt
+ATOM_CERTS_INTERMEDIATE_CA_KEY_PATH=/certs/intermediate-ca.key
+```
+
+Local/dev can use:
+
+```text
+ATOM_CERTS_CA_MODE=file_root_issuer
+ATOM_CERTS_ROOT_CA_CERT_PATH=/certs/root-ca.crt
+ATOM_CERTS_ROOT_CA_KEY_PATH=/certs/root-ca.key
+```
+
+Root issuer mode is less safe because the root private key is mounted into Atom. Production should prefer an intermediate issuer so the root private key can stay offline.
+
+## What Is Stored
+
+| Item | Stored where |
+|---|---|
+| Root CA certificate | Mounted file |
+| Intermediate CA certificate | Mounted file |
+| Issuer private key | Mounted file, loaded at startup |
+| Issued leaf certificate | `credentials` row with `kind = certificate` |
+| Issued leaf private key | Returned once, never stored |
+| CSR private key | Never enters Atom |
+| CRL cache | `certificate_crl_state` |
+
+## Public PKI Endpoints
+
+These endpoints are public because clients and runtimes need to verify certificates:
+
+```text
+GET  /certs/ca-chain
+GET  /certs/crl
+POST /certs/ocsp
+```
+
+## Runtime Lookup
+
+Runtime services should prefer certificate fingerprint plus serial number when asking Atom to resolve a certificate. Atom returns identity only for active, known, non-expired, non-revoked certificates.
+
+If the certificate is unknown, expired, revoked, or issued by the wrong issuer, Atom returns a negative result.

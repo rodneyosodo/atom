@@ -2,11 +2,13 @@
   "title": "Atom",
   "pages": [
     "index",
+    "simple-words",
     "quickstart",
     "architecture",
     "access-control",
     "authentication",
     "queries",
+    "magistrala-on-atom",
     "endpoints"
   ]
 }

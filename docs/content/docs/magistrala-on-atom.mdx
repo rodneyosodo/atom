@@ -1,0 +1,71 @@
+---
+title: Magistrala On Atom
+description: How Magistrala concepts map to Atom and how runtime services use Atom.
+---
+
+Magistrala uses Atom as its identity, credential, authorization, certificate, and audit system.
+
+Magistrala still handles IoT application behavior: protocols, message routing, storage, alarms, reports, and UI workflows. Atom handles the security decisions behind those workflows.
+
+## Concept Mapping
+
+| Magistrala concept | Atom primitive |
+|---|---|
+| Domain | Tenant |
+| User | Entity with `kind = human` |
+| Client | Entity with `kind = device` or `service` |
+| Channel | Resource with `kind = channel` |
+| Rule, report, alarm | Resource with matching kind |
+| Client key | Password credential or API key credential |
+| Client certificate | Certificate credential |
+| Group boundary | Object group |
+| Role member set | Principal group or role assignment |
+| Client-channel connection | Role assignment or direct policy |
+
+## Runtime Flow
+
+<Mermaid chart={`flowchart LR
+  mgui[Magistrala UI]
+  mgapi[Magistrala services]
+  atom[Atom GraphQL and HTTP]
+  fluxmq[FluxMQ]
+  atomgrpc[Atom gRPC]
+  writer[Writers]
+  db[(Timescale or app storage)]
+
+  mgui --> mgapi
+  mgapi --> atom
+  mgapi --> fluxmq
+  fluxmq --> atomgrpc
+  atomgrpc --> fluxmq
+  fluxmq --> writer
+  writer --> db
+`} />
+
+**What this means:** Magistrala creates domains, clients, channels, roles, and credentials in Atom. At runtime, FluxMQ asks Atom whether a client is authenticated and whether it can publish or subscribe. If Atom allows the request, the message continues to the writer and storage.
+
+## MQTT Example
+
+When a device publishes a message:
+
+1. The device connects to FluxMQ with a client ID and secret, API key, or certificate.
+2. FluxMQ asks Atom to authenticate the identity.
+3. FluxMQ asks Atom whether that entity can `publish` to the channel.
+4. Atom evaluates current roles, direct policies, groups, and conditions.
+5. If allowed, FluxMQ accepts the message.
+6. The writer persists the message.
+
+## Certificate Example
+
+When a device uses mTLS:
+
+1. FluxMQ terminates TLS and reads the client certificate.
+2. FluxMQ sends the certificate serial and fingerprint to Atom gRPC.
+3. Atom checks the certificate credential row.
+4. Atom rejects unknown, expired, or revoked certificates.
+5. Atom returns the owning entity for active certificates.
+6. FluxMQ uses that entity for the normal `publish` or `subscribe` authorization check.
+
+## Source Of Truth
+
+The detailed product mapping lives in [Building Magistrala on Atom](https://github.com/absmach/atom/blob/main/product-docs/10-magistrala-on-atom.md).

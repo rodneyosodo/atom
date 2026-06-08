@@ -27,8 +27,12 @@ This README is the quickstart and orientation document. It should not duplicate 
 - Access model source of truth: [product-docs/11-access-model-simplification.md](product-docs/11-access-model-simplification.md)
 - Magistrala integration source of truth: [product-docs/10-magistrala-on-atom.md](product-docs/10-magistrala-on-atom.md)
 - Certificate lifecycle source of truth: [product-docs/12-certificates.md](product-docs/12-certificates.md)
+- Beginner/operator guide: [docs/content/docs/simple-words.mdx](docs/content/docs/simple-words.mdx)
+- Architecture diagrams: [docs/content/docs/architecture/index.mdx](docs/content/docs/architecture/index.mdx)
+- Certificate guide with flow diagram: [docs/content/docs/authentication/certificates.mdx](docs/content/docs/authentication/certificates.mdx)
+- Magistrala integration guide with flow diagram: [docs/content/docs/magistrala-on-atom.mdx](docs/content/docs/magistrala-on-atom.mdx)
 
-Do not use older terminology such as Capability, Policy Binding, `role_capabilities`, or `scopeKind/scopeRef` as the product model. Atom now uses Actions, Permission Blocks, Roles, Role Assignments, Direct Policies, Principal Groups, and Object Groups.
+Do not use older pre-May-2026 authorization terminology as the product model. Atom now uses Actions, Permission Blocks, Roles, Role Assignments, Direct Policies, Principal Groups, and Object Groups.
 
 ---
 
