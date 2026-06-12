@@ -147,35 +147,61 @@ Object Group           = where
 
 ## Quick start
 
+Use the Makefile for local Docker Compose development:
+
+```bash
+# 1. Create .env.dev and local dev CA files under certs/
+make dev-env
+
+# 2. Build and start Postgres, Atom, and the Atom Next UI
+make up
+
+# 3. Follow backend and UI logs
+make logs
+```
+
+`make up` runs Docker Compose with `.env.dev`, `--profile default`, and
+`--profile atom-ui`. It starts:
+
+- Atom REST/GraphQL on `http://localhost:18080`
+- Atom Next UI on `http://localhost:3005`
+- Postgres on `127.0.0.1:5432`
+
+Stop or rebuild the stack with:
+
+```bash
+make down
+make restart
+```
+
+GraphQL is available at `POST /graphql` in both images. With the Makefile
+Compose flow, use `POST http://localhost:18080/graphql`.
+
+To run Atom directly with Cargo instead of the Compose backend:
+
 ```bash
 # 1. Copy and edit config
 cp .env.example .env
 # set ADMIN_SECRET on first boot to create the admin password
-# mount issuer CA files under ATOM_CERTS_CA_DIR when ATOM_CERTS_ENABLED=true
+# set ATOM_CERTS_ENABLED=false for a minimal local run, or point certificate
+# paths at host files under certs/
 
 # 2. Start Postgres
-docker compose up postgres -d
+docker compose --env-file .env up -d postgres
 
-# 3. Run (migrations apply automatically on startup)
+# 3. Run Atom on LISTEN_ADDR, default http://localhost:8080
 cargo run
-
-# or with Docker (release image on :8080)
-docker compose up --build atom
-
-# or with the dev image on :8081
-docker compose --profile dev up --build atom-dev
-
-# or with the optional Next UI on :3005
-docker compose --profile atom-ui up -d --build
 ```
 
-The service starts on `http://localhost:8080`.
-
-GraphQL is available at `POST /graphql` in both images. GraphQL uses the same Bearer token authentication as REST.
+Migrations apply automatically on startup.
 
 Certificate support is enabled by default. Atom loads issuer CA material from mounted files and does not store CA certificates or CA private keys in Postgres. Production deployments should use `ATOM_CERTS_CA_MODE=file_intermediate_issuer` with root certificate, intermediate certificate, and intermediate private key files mounted read-only; `file_root_issuer` is supported for local/dev when only root certificate and root private key files exist. Public PKI endpoints are available at `GET /certs/ca-chain`, `GET /certs/crl`, and `POST /certs/ocsp`.
 
-The Atom Next UI is a separate optional service. In Docker Compose it is enabled with the `atom-ui` profile and is available at `http://localhost:3005`. Registration UI is exposed at `/register` when `ATOM_UI_REGISTRATION_ENABLED=true` and backend self-registration is enabled.
+The Atom Next UI is a separate optional service. In the Makefile-backed Docker
+Compose flow it is enabled by default with the `atom-ui` profile and is
+available at `http://localhost:3005`. Registration UI is exposed at `/register`
+when `ATOM_UI_REGISTRATION_ENABLED=true` and backend self-registration is
+enabled.
 
 Shared Magistrala/Cube deployments may consume `ghcr.io/absmach/atom:latest` and `ghcr.io/absmach/atom-ui:latest`, but those tags are mutable. Before consuming `latest`, publish both images from the same stabilized Atom commit. Production deployments that need immutability should override the image with a digest or fixed release tag.
 
@@ -196,10 +222,41 @@ When using the dev Docker backend on `http://localhost:8081`, set `ATOM_GRAPHQL_
 If a host port is already occupied, override only the host-side port:
 
 ```bash
-POSTGRES_HOST_PORT=55432 ATOM_HTTP_PORT=18080 docker compose up --build atom
+POSTGRES_HOST_PORT=55432 ATOM_HTTP_PORT=28080 ATOM_UI_HTTP_PORT=3006 make up
 ```
 
 The Atom container still connects to Postgres through Docker DNS at `postgres:5432`.
+
+## Makefile commands
+
+Run `make help` to print the current target list from the Makefile.
+
+| Command | What it does |
+|---------|--------------|
+| `make dev-env` | Creates `.env.dev` with local defaults and generates local dev CA files under `certs/` if needed. |
+| `make build` | Builds and tags the Atom backend and Atom UI images for local Compose use. |
+| `make atom-build` | Builds and tags only the Atom backend image. |
+| `make ui-build` | Builds and tags only the Atom UI image. |
+| `make up` | Builds and starts Postgres, Atom, and Atom UI with `.env.dev`. |
+| `make restart` | Stops the local Compose stack, then rebuilds and starts it again. |
+| `make logs` | Follows Atom backend and Atom UI logs. |
+| `make down` | Stops the local Compose stack. |
+| `make docker-build` | Builds the raw Atom Docker image using `BUILD_TARGET`, `IMAGE_NAME`, and `IMAGE_TAG`. |
+| `make docker-build-release` | Builds the raw release Docker image. |
+| `make docker-build-dev` | Builds the raw dev Docker image. |
+
+Common overrides:
+
+```bash
+# Use another env file
+DEV_ENV_FILE=.env.local make up
+
+# Build a specific image tag
+IMAGE_TAG=2026-06-12 make build
+
+# Start only selected Compose profiles
+COMPOSE_PROFILES="--profile default" make up
+```
 
 Production builds can be made with:
 
@@ -373,13 +430,17 @@ Generic application mapping:
 | `ATOM_CERTS_LEAF_DEFAULT_TTL_SECS` | `2592000` | Default issued certificate lifetime |
 | `ATOM_CERTS_LEAF_MAX_TTL_SECS` | `2592000` | Maximum issued certificate lifetime |
 | `ATOM_CERTS_CA_DIR` | `./certs` | Docker Compose host directory mounted at `/certs:ro` |
-| `POSTGRES_HOST_PORT` / `ATOM_HTTP_PORT` / `ATOM_DEV_HTTP_PORT` / `ATOM_UI_HTTP_PORT` | `5432` / `8080` / `8081` / `3005` | Docker Compose host ports |
+| `POSTGRES_HOST_PORT` / `ATOM_HTTP_PORT` / `ATOM_DEV_HTTP_PORT` / `ATOM_UI_HTTP_PORT` | `5432` / `8080` / `8081` / `3005` | Docker Compose host ports; `.env.dev` generated by `make dev-env` sets `ATOM_HTTP_PORT=18080` |
 | `ATOM_GRAPHQL_URL` | `http://atom:8080/graphql` | GraphQL endpoint used by the Dockerized Next UI |
 | `RUST_LOG` | `info` | Log level filter |
 
 ---
 
 ## Authentication
+
+The examples below use `http://localhost:8080`, which is the default direct
+`cargo run` address. If you started Atom with `make up`, use
+`http://localhost:18080` instead.
 
 Authenticated REST, GraphQL, and custom endpoint requests use:
 
@@ -700,8 +761,8 @@ cargo build
 # Run with live reload
 cargo watch -x run
 
-# Run Postgres only
-docker compose up postgres -d
+# Run Postgres only for cargo run
+docker compose --env-file .env up -d postgres
 
 # Lint
 cargo clippy -- -D warnings
