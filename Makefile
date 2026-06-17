@@ -64,14 +64,20 @@ dev: db
 	  ATOM_GRAPHQL_URL=http://localhost:$(DEV_HTTP_PORT)/graphql PORT=$(DEV_UI_PORT) pnpm dev ) & \
 	wait
 
-build:
-	$(COMPOSE_ENV) $(COMPOSE) --env-file $(DEV_ENV_FILE) $(COMPOSE_PROFILES) build atom atom-ui
+build: atom-build ui-build
 
 atom-build:
-	$(COMPOSE_ENV) $(COMPOSE) --env-file $(DEV_ENV_FILE) $(COMPOSE_PROFILES) build atom
+	docker build \
+		-f $(DOCKERFILE) \
+		--target $(BUILD_TARGET) \
+		-t "$(ATOM_IMAGE)" \
+		$(BUILD_CONTEXT)
 
 ui-build:
-	$(COMPOSE_ENV) $(COMPOSE) --env-file $(DEV_ENV_FILE) $(COMPOSE_PROFILES) build atom-ui
+	docker build \
+		-f app/Dockerfile \
+		-t "$(ATOM_UI_IMAGE)" \
+		app
 
 up:
 	$(COMPOSE_ENV) $(COMPOSE) --env-file $(DEV_ENV_FILE) $(COMPOSE_PROFILES) up -d postgres atom atom-ui
