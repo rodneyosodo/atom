@@ -79,12 +79,16 @@ export function renderCell(
     )
   ) {
     return (
-      <div className="w-40 font-mono text-xs break-all">{String(value)}</div>
+      <div className="w-40 whitespace-normal break-all font-mono text-xs">
+        {String(value)}
+      </div>
     );
   }
   if (String(value).length > 44) {
     return (
-      <div className="w-40 font-mono text-xs break-all">{String(value)}</div>
+      <div className="w-40 whitespace-normal break-all font-mono text-xs">
+        {String(value)}
+      </div>
     );
   }
   return <span>{String(value)}</span>;
