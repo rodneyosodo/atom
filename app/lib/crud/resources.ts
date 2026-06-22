@@ -80,9 +80,24 @@ export const crudResources: CrudResource[] = [
     icon: Fingerprint,
     queryName: "entities",
     tenantFilter: true,
-    listQuery: `query Entities($tenantId: ID, $limit: Int = 50, $offset: Int = 0) { entities(tenantId: $tenantId, limit: $limit, offset: $offset) { total items { id kind profileId profileVersionId name alias tenantId parentGroupId attributes status createdAt updatedAt } } }`,
+    listQuery: `query Entities($tenantId: ID, $kind: EntityKind, $limit: Int = 50, $offset: Int = 0) { entities(tenantId: $tenantId, kind: $kind, limit: $limit, offset: $offset) { total items { id kind profileId profileVersionId name alias tenantId parentGroupId attributes status createdAt updatedAt } } }`,
     createMutation: `mutation CreateEntity($input: CreateEntityInput!) { createEntity(input: $input) { id kind profileId profileVersionId name alias tenantId status createdAt updatedAt } }`,
     formAttributes: true,
+    filters: [
+      {
+        key: "kind",
+        variable: "kind",
+        label: "Kind",
+        type: "select",
+        options: [
+          { label: "Human", value: "human" },
+          { label: "Device", value: "device" },
+          { label: "Service", value: "service" },
+          { label: "Workload", value: "workload" },
+          { label: "Application", value: "application" },
+        ],
+      },
+    ],
     columns: [
       { key: "name", label: "Name", priority: "high" },
       { key: "alias", label: "Alias", priority: "medium" },
