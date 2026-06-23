@@ -17,10 +17,7 @@ async fn main() -> anyhow::Result<()> {
     let cfg = config::Config::from_env()?;
     let pool = db::create_pool(&cfg.database_url, &cfg.db_pool).await?;
 
-    sqlx::migrate::Migrator::new(std::path::Path::new("./migrations"))
-        .await?
-        .run(&pool)
-        .await?;
+    sqlx::migrate!("./migrations").run(&pool).await?;
     tracing::info!("migrations applied");
 
     if let Some(ref secret) = cfg.admin_secret {
@@ -46,9 +43,10 @@ async fn main() -> anyhow::Result<()> {
         .await;
     audit::spawn_retention_cleanup(state.clone());
 
-    // Spawn gRPC server on a separate port; runs concurrently with HTTP.
+    // Spawn gRPC server on a separate port; runs concurrently with HTTP. It
+    // installs its own shutdown listener and drains on SIGINT/SIGTERM.
     let grpc_state = state.clone();
-    tokio::spawn(async move {
+    let grpc_handle = tokio::spawn(async move {
         if let Err(e) = grpc::serve(grpc_listener, grpc_state).await {
             tracing::error!("grpc server exited: {e}");
         }
@@ -62,7 +60,15 @@ async fn main() -> anyhow::Result<()> {
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
+    .with_graceful_shutdown(atom::shutdown::shutdown_signal())
     .await?;
+
+    // HTTP has drained; wait for the gRPC task to finish draining too so the
+    // process does not exit out from under in-flight gRPC requests.
+    tracing::info!("http server stopped; waiting for grpc to drain");
+    if let Err(e) = grpc_handle.await {
+        tracing::error!("grpc task join error: {e}");
+    }
 
     Ok(())
 }

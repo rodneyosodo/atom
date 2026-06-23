@@ -7,7 +7,7 @@ Lightweight replacement for Keycloak — single Rust binary, single Postgres dat
 - **Language:** Rust (edition 2021)
 - **HTTP framework:** Axum 0.7
 - **APIs:** GraphQL (async-graphql `=7.2.1`, depth/complexity/introspection limits) + gRPC (Tonic 0.12 + tonic-health). The legacy tenant Axum handlers are **unmounted** (see `routes.rs`); the dead authz REST handler module has been removed.
-- **Database:** PostgreSQL via sqlx 0.8.6 (dynamic `query`/`query_as`; macros off)
+- **Database:** PostgreSQL via sqlx 0.8.6 (dynamic `query`/`query_as`; the `macros` feature is enabled only for `migrate!` — query macros are not used, so no compile-time DB is required)
 - **Auth:** argon2 (password/API-key hashing); **ES256** JWTs via `p256` with `kid` rotation + JWKS (tokens carry identity/session, never permissions)
 - **PKI:** `rcgen`/`ring`/`ocsp`/`x509-parser` (certificate issuance, CSR, renewal, CRL, OCSP)
 - **Runtime:** Tokio (full features)
@@ -112,7 +112,7 @@ Set `ADMIN_SECRET` on first boot to create the password credential for `atom-adm
 - All PKs are UUIDs (`gen_random_uuid()` via pgcrypto).
 - `entities` and `groups` have a composite unique index on `(name, tenant_id)` — name uniqueness is per-tenant.
 - `actions` unique on `name`; `action_applicability` defines valid object kind/type pairs.
-- Migrations run automatically on startup via a runtime `sqlx::migrate::Migrator` over `./migrations` (CWD-dependent; embedding via `sqlx::migrate!` is a tracked TODO). New migrations go in `migrations/NNN_<name>.sql`.
+- Migrations are embedded in the binary at compile time via `sqlx::migrate!("./migrations")` and run automatically on startup (no runtime CWD dependency). New migrations go in `migrations/NNN_<name>.sql`; adding one requires a rebuild.
 - GIN indexes on `attributes` JSONB columns in `entities` and `resources`.
 
 ## API Key Format
@@ -191,7 +191,7 @@ Environment variables: copy `.env.example` to `.env`. Required: `DATABASE_URL`. 
 Optional: `ADMIN_SECRET` — if set, bootstraps the admin entity's password on first boot.
 Optional: `ADMIN_ENTITY_ID` — override the seeded admin UUID (default `00000000-0000-0000-0000-000000000001`).
 
-The runtime is production-hardened: configurable DB pool, five-category IP rate limiter, GraphQL depth/complexity/introspection limits (introspection **off** by default — opt in with `ATOM_GRAPHQL_INTROSPECTION_ENABLED=true`), per-route body limits, signing-key encryption at rest, audit retention, and a `/health/ready` readiness probe.
+The runtime is production-hardened: configurable DB pool, five-category IP rate limiter, GraphQL depth/complexity/introspection limits (introspection **off** by default — opt in with `ATOM_GRAPHQL_INTROSPECTION_ENABLED=true`), per-route body limits, signing-key encryption at rest, audit retention, a `/health/ready` readiness probe, and graceful shutdown on SIGINT/SIGTERM (both the HTTP and gRPC servers drain in-flight requests before exit).
 
 ## Key Invariants
 

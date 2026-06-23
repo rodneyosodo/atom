@@ -375,7 +375,7 @@ pub async fn serve(listener: TcpListener, state: AppState) -> anyhow::Result<()>
         .add_service(AliasServiceServer::new(AtomAlias {
             state: state.clone(),
         }))
-        .serve_with_incoming(incoming)
+        .serve_with_incoming_shutdown(incoming, crate::shutdown::shutdown_signal())
         .await;
 
     match result {
