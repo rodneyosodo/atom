@@ -1,2 +1,2 @@
-pub mod handlers;
+pub mod email;
 pub mod repo;

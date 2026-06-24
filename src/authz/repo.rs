@@ -975,27 +975,6 @@ async fn lock_role(
     Ok(())
 }
 
-pub async fn replace_role_permission_blocks(
-    pool: &PgPool,
-    role_id: Uuid,
-    permission_blocks: &[CreateRolePermissionBlock],
-) -> Result<(), AppError> {
-    if permission_blocks.is_empty() {
-        return Err(AppError::bad_request("role permission blocks are required"));
-    }
-    validate_role_permission_blocks(pool, permission_blocks).await?;
-
-    let mut tx = pool.begin().await.map_err(db_err)?;
-    lock_role(&mut tx, role_id).await?;
-    let old_block_ids = role_block_ids(&mut tx, role_id).await?;
-    unlink_role_blocks_and_gc(&mut tx, role_id, &old_block_ids).await?;
-    for block in permission_blocks {
-        insert_role_permission_block(&mut tx, role_id, block).await?;
-    }
-    tx.commit().await.map_err(db_err)?;
-    Ok(())
-}
-
 pub async fn replace_role_permission_block_links(
     pool: &PgPool,
     role_id: Uuid,
@@ -2044,16 +2023,6 @@ pub async fn role_derived_kind(pool: &PgPool, role_id: Uuid) -> Result<RoleDeriv
             ))
         }
     })
-}
-
-pub async fn child_roles(pool: &PgPool, role_id: Uuid) -> Result<Vec<Role>, AppError> {
-    let _ = (pool, role_id);
-    Ok(Vec::new())
-}
-
-pub async fn parent_roles(pool: &PgPool, role_id: Uuid) -> Result<Vec<Role>, AppError> {
-    let _ = (pool, role_id);
-    Ok(Vec::new())
 }
 
 async fn ensure_entities_exist(pool: &PgPool, entity_ids: &[Uuid]) -> Result<(), AppError> {
@@ -4601,53 +4570,6 @@ pub async fn audit_logs(
     .await
     .map_err(db_err)?;
     Ok(AuditLogResponse { items, total })
-}
-
-pub async fn tenant_ids_for_capability(
-    pool: &PgPool,
-    entity_id: Uuid,
-    capability_name: &str,
-) -> Result<Vec<Uuid>, AppError> {
-    sqlx::query_scalar(
-        r#"WITH RECURSIVE group_paths(group_id) AS (
-               SELECT gm.group_id
-               FROM group_members gm
-               JOIN groups g ON g.id = gm.group_id AND g.status = 'active' AND g.deleted_at IS NULL
-               WHERE gm.entity_id = $1
-               UNION ALL
-               SELECT gh.parent_id
-               FROM group_hierarchy gh
-               JOIN group_paths gp ON gp.group_id = gh.child_id
-               JOIN groups parent ON parent.id = gh.parent_id AND parent.status = 'active' AND parent.deleted_at IS NULL
-           )
-           SELECT DISTINCT pb.scope_ref::uuid
-           FROM effective_access_edges() pb
-           WHERE (
-               (pb.subject_kind = 'entity' AND pb.subject_id = $1)
-               OR (pb.subject_kind = 'group' AND pb.subject_id IN (SELECT group_id FROM group_paths))
-           )
-             AND pb.effect = 'allow'
-             AND pb.scope_kind = 'tenant'
-             AND pb.scope_ref IS NOT NULL
-             AND (
-               (pb.grant_kind = 'capability' AND pb.grant_id IN (
-                   SELECT id FROM actions WHERE name = $2
-               ))
-               OR (pb.grant_kind = 'role' AND pb.grant_id IN (
-                   SELECT role_id
-                   FROM effective_role_actions() rc
-                   JOIN actions c ON c.id = rc.capability_id
-                   WHERE c.name = $2
-                   UNION
-                   SELECT NULL::uuid WHERE FALSE
-               ))
-             )"#,
-    )
-    .bind(entity_id)
-    .bind(capability_name)
-    .fetch_all(pool)
-    .await
-    .map_err(db_err)
 }
 
 /// Tenants in which `entity_id` effectively holds `action_name` for `object_kind`,

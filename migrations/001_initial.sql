@@ -2,7 +2,8 @@
 --
 -- This migration is intentionally squashed because Atom has not shipped a
 -- released database contract yet. It creates the current schema directly and
--- seeds the platform data required by Atom and Magistrala.
+-- seeds the platform data Atom requires to boot (admin identity, action
+-- vocabulary, applicability, and assignment guardrails).
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 

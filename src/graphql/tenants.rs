@@ -11,7 +11,7 @@ use crate::{
         tenant::ListTenants,
     },
     state::AppState,
-    tenants::{handlers as tenant_handlers, repo as tenant_repo},
+    tenants::{email as tenant_email, repo as tenant_repo},
 };
 
 use super::{
@@ -439,7 +439,7 @@ impl TenantMutation {
         .map_err(gql_error)?;
 
         if let (Some(email), Some(token)) = (created.email.as_deref(), created.token.as_deref()) {
-            tenant_handlers::send_invitation_email(&state.config, email, &redirect_url, token)
+            tenant_email::send_invitation_email(&state.config, email, &redirect_url, token)
                 .await
                 .map_err(gql_error)?;
         }
