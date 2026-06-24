@@ -28,6 +28,7 @@ import { CrudInspectSheet } from "@/components/crud/table/inspect-sheet";
 import type { CrudTableProps, Row } from "@/components/crud/table/types";
 import {
   defer,
+  isDeletedRow,
   singularize,
   tenantActionPastTense,
 } from "@/components/crud/table/utils";
@@ -35,6 +36,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/ui/data-table";
 import { requireResource } from "@/lib/crud/resources";
+import { SOFT_DELETE_RETENTION_NOTE } from "@/lib/crud/retention";
 import { graphqlClient } from "@/lib/graphql/client";
 import { extractIds, useNameMap } from "@/lib/reconcile/use-name-map";
 
@@ -291,6 +293,7 @@ export function CrudTable({
         searchPlaceholder={`Filter ${resource.title.toLowerCase()}...`}
         statusFilter={{
           enabled: resource.columns.some((column) => column.key === "status"),
+          options: resource.statusOptions,
         }}
         toolbar={
           <div className="flex items-center gap-2">
@@ -366,6 +369,16 @@ function TableRowActions({
   row: Row;
   tenantStatusPending: boolean;
 }) {
+  if (isDeletedRow(row)) {
+    return (
+      <div className="flex justify-end gap-2">
+        <Button onClick={onInspect} size="sm" variant="outline">
+          Inspect
+        </Button>
+      </div>
+    );
+  }
+
   return (
     <div className="flex justify-end gap-2">
       <Button onClick={onInspect} size="sm" variant="outline">
@@ -373,14 +386,26 @@ function TableRowActions({
       </Button>
       {resourceKey === "tenants" ? (
         <TenantActionButtons
+          isDestroyPending={destroyPending}
           isPending={tenantStatusPending}
+          onDelete={() =>
+            onDelete(
+              `Delete tenant "${String(row.name ?? row.id)}"? Revokes child sessions. ${SOFT_DELETE_RETENTION_NOTE}`,
+            )
+          }
           onEdit={() => onEdit.setTenant(row)}
           onStatusChange={onTenantStatusChange}
           row={row}
         />
       ) : resourceKey === "entities" ? (
         <EntityActionButtons
+          isDestroyPending={destroyPending}
           isPending={entityStatusPending}
+          onDelete={() =>
+            onDelete(
+              `Delete entity "${String(row.name ?? row.id)}"? Revokes its credentials and sessions. ${SOFT_DELETE_RETENTION_NOTE}`,
+            )
+          }
           onEdit={() => defer(() => onEdit.setEntity(row))}
           onStatusChange={onEntityStatusChange}
           row={row}
@@ -398,7 +423,7 @@ function TableRowActions({
           onEdit={() => defer(() => onEdit.setGroup(row))}
           onDelete={() =>
             onDelete(
-              `Delete group "${String(row.name ?? row.id)}"? This cannot be undone.`,
+              `Delete group "${String(row.name ?? row.id)}"? ${SOFT_DELETE_RETENTION_NOTE}`,
             )
           }
         />
@@ -408,7 +433,7 @@ function TableRowActions({
           onEdit={() => defer(() => onEdit.setResource(row))}
           onDelete={() =>
             onDelete(
-              `Delete resource "${String(row.name ?? row.id)}"? This cannot be undone.`,
+              `Delete resource "${String(row.name ?? row.id)}"? ${SOFT_DELETE_RETENTION_NOTE}`,
             )
           }
         />
@@ -418,7 +443,7 @@ function TableRowActions({
           onEdit={() => defer(() => onEdit.setRole(row))}
           onDelete={() =>
             onDelete(
-              `Delete role "${String(row.name ?? row.id)}"? This cannot be undone.`,
+              `Delete role "${String(row.name ?? row.id)}"? ${SOFT_DELETE_RETENTION_NOTE}`,
             )
           }
         />

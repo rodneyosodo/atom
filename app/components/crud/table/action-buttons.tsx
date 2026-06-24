@@ -6,12 +6,16 @@ import type { Row } from "@/components/crud/table/types";
 import { Button } from "@/components/ui/button";
 
 export function TenantActionButtons({
+  isDestroyPending,
   isPending,
+  onDelete,
   onEdit,
   onStatusChange,
   row,
 }: {
+  isDestroyPending: boolean;
   isPending: boolean;
+  onDelete: () => void;
   onEdit: () => void;
   onStatusChange: (action: keyof typeof TENANT_STATUS_MUTATIONS) => void;
   row: Row;
@@ -39,12 +43,12 @@ export function TenantActionButtons({
             onClick={() => onStatusChange("disable")}
             size="sm"
             variant="outline"
-            className="border-red-500/50 text-red-600 hover:bg-red-500/10 hover:text-red-600 dark:border-red-500/40 dark:text-red-400"
+            className="border-amber-500/50 text-amber-600 hover:bg-amber-500/10 hover:text-amber-600 dark:border-amber-500/40 dark:text-amber-400"
           >
             Disable
           </Button>
         </>
-      ) : (
+      ) : status === "deleted" ? null : (
         <Button
           disabled={isPending}
           onClick={() => onStatusChange("enable")}
@@ -55,17 +59,32 @@ export function TenantActionButtons({
           Enable
         </Button>
       )}
+      {status === "deleted" ? null : (
+        <Button
+          disabled={isDestroyPending}
+          onClick={onDelete}
+          size="sm"
+          variant="outline"
+          className="border-red-500/50 text-red-600 hover:bg-red-500/10 hover:text-red-600 dark:border-red-500/40 dark:text-red-400"
+        >
+          Delete
+        </Button>
+      )}
     </>
   );
 }
 
 export function EntityActionButtons({
+  isDestroyPending,
   isPending,
+  onDelete,
   onEdit,
   onStatusChange,
   row,
 }: {
+  isDestroyPending: boolean;
   isPending: boolean;
+  onDelete: () => void;
   onEdit: () => void;
   onStatusChange: (action: keyof typeof ENTITY_STATUS_MUTATIONS) => void;
   row: Row;
@@ -82,7 +101,7 @@ export function EntityActionButtons({
           onClick={() => onStatusChange("disable")}
           size="sm"
           variant="outline"
-          className="border-red-500/50 text-red-600 hover:bg-red-500/10 hover:text-red-600 dark:border-red-500/40 dark:text-red-400"
+          className="border-amber-500/50 text-amber-600 hover:bg-amber-500/10 hover:text-amber-600 dark:border-amber-500/40 dark:text-amber-400"
         >
           Disable
         </Button>
@@ -97,6 +116,15 @@ export function EntityActionButtons({
           Enable
         </Button>
       )}
+      <Button
+        disabled={isDestroyPending}
+        onClick={onDelete}
+        size="sm"
+        variant="outline"
+        className="border-red-500/50 text-red-600 hover:bg-red-500/10 hover:text-red-600 dark:border-red-500/40 dark:text-red-400"
+      >
+        Delete
+      </Button>
     </>
   );
 }
@@ -124,7 +152,7 @@ export function ProfileActionButtons({
           onClick={() => onStatusChange("disabled")}
           size="sm"
           variant="outline"
-          className="border-red-500/50 text-red-600 hover:bg-red-500/10 hover:text-red-600 dark:border-red-500/40 dark:text-red-400"
+          className="border-amber-500/50 text-amber-600 hover:bg-amber-500/10 hover:text-amber-600 dark:border-amber-500/40 dark:text-amber-400"
         >
           Disable
         </Button>

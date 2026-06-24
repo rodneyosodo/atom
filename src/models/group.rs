@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::enums::EntityStatus;
+use super::enums::{DeletedFilter, EntityStatus};
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Group {
@@ -15,6 +15,8 @@ pub struct Group {
     pub parent_id: Option<Uuid>,
     pub status: EntityStatus,
     pub attributes: Value,
+    pub deleted_at: Option<DateTime<Utc>>,
+    pub deleted_by: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: Option<DateTime<Utc>>,
 }
@@ -45,6 +47,8 @@ pub struct ListGroups {
     pub group_type: Option<String>,
     pub parent_id: Option<Uuid>,
     pub status: Option<EntityStatus>,
+    #[serde(default)]
+    pub deleted: DeletedFilter,
     #[serde(default = "default_limit")]
     pub limit: i64,
     #[serde(default)]

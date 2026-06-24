@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+use super::enums::DeletedFilter;
+
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Resource {
     pub id: Uuid,
@@ -12,6 +14,8 @@ pub struct Resource {
     pub tenant_id: Option<Uuid>,
     pub owner_id: Option<Uuid>,
     pub attributes: Value,
+    pub deleted_at: Option<DateTime<Utc>>,
+    pub deleted_by: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: Option<DateTime<Utc>>,
 }
@@ -46,6 +50,8 @@ pub struct ListResources {
     pub tenant_id: Option<Uuid>,
     pub parent_group_id: Option<Uuid>,
     pub include_descendants: bool,
+    #[serde(default)]
+    pub deleted: DeletedFilter,
     #[serde(default = "default_limit")]
     pub limit: i64,
     #[serde(default)]

@@ -10,8 +10,9 @@ use crate::{
         access as access_model, action_assignment_rule as action_assignment_rule_model,
         api_endpoint as api_endpoint_model, capability as capability_model, entity as entity_model,
         enums::{
-            ActionAssignmentDecision, AuditOutcome, CredentialKind, CredentialStatus, Effect,
-            EntityKind, EntityStatus, GrantKind, ObjectKind, ScopeKind, SubjectKind, TenantStatus,
+            ActionAssignmentDecision, AuditOutcome, CredentialKind, CredentialStatus,
+            DeletedFilter, Effect, EntityKind, EntityStatus, GrantKind, ObjectKind, ScopeKind,
+            SubjectKind, TenantStatus,
         },
         group as group_model, policy as policy_model, profile as profile_model,
         resource as resource_model, role as role_model, session as session_model,
@@ -45,6 +46,14 @@ pub enum GqlTenantStatus {
     Inactive,
     Frozen,
     Deleted,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(name = "DeletedFilter", rename_items = "snake_case")]
+pub enum GqlDeletedFilter {
+    Live,
+    Deleted,
+    All,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
@@ -242,6 +251,14 @@ impl Entity {
         &self.0.attributes
     }
 
+    async fn deleted_at(&self) -> Option<String> {
+        self.0.deleted_at.map(timestamp)
+    }
+
+    async fn deleted_by(&self) -> Option<ID> {
+        self.0.deleted_by.map(id)
+    }
+
     async fn created_at(&self) -> String {
         timestamp(self.0.created_at)
     }
@@ -358,6 +375,14 @@ impl Tenant {
         self.0.updated_by.map(id)
     }
 
+    async fn deleted_at(&self) -> Option<String> {
+        self.0.deleted_at.map(timestamp)
+    }
+
+    async fn deleted_by(&self) -> Option<ID> {
+        self.0.deleted_by.map(id)
+    }
+
     async fn created_at(&self) -> String {
         timestamp(self.0.created_at)
     }
@@ -458,6 +483,14 @@ impl Resource {
 
     async fn attributes(&self) -> &Value {
         &self.0.attributes
+    }
+
+    async fn deleted_at(&self) -> Option<String> {
+        self.0.deleted_at.map(timestamp)
+    }
+
+    async fn deleted_by(&self) -> Option<ID> {
+        self.0.deleted_by.map(id)
     }
 
     async fn created_at(&self) -> String {
@@ -623,6 +656,14 @@ impl Group {
         &self.0.attributes
     }
 
+    async fn deleted_at(&self) -> Option<String> {
+        self.0.deleted_at.map(timestamp)
+    }
+
+    async fn deleted_by(&self) -> Option<ID> {
+        self.0.deleted_by.map(id)
+    }
+
     async fn created_at(&self) -> String {
         timestamp(self.0.created_at)
     }
@@ -751,6 +792,14 @@ impl Role {
             .await
             .map_err(|err| async_graphql::Error::new(err.to_string()))?;
         Ok(blocks.into_iter().map(PermissionBlock::from).collect())
+    }
+
+    async fn deleted_at(&self) -> Option<String> {
+        self.0.deleted_at.map(timestamp)
+    }
+
+    async fn deleted_by(&self) -> Option<ID> {
+        self.0.deleted_by.map(id)
     }
 
     async fn created_at(&self) -> String {
@@ -2395,6 +2444,10 @@ pub fn parse_optional_tenant_status(value: Option<GqlTenantStatus>) -> Option<Te
     value.map(TenantStatus::from)
 }
 
+pub fn parse_deleted_filter(value: Option<GqlDeletedFilter>) -> DeletedFilter {
+    value.map(DeletedFilter::from).unwrap_or_default()
+}
+
 impl From<GqlEntityKind> for EntityKind {
     fn from(kind: GqlEntityKind) -> Self {
         match kind {
@@ -2446,6 +2499,16 @@ impl From<GqlTenantStatus> for TenantStatus {
             GqlTenantStatus::Inactive => TenantStatus::Inactive,
             GqlTenantStatus::Frozen => TenantStatus::Frozen,
             GqlTenantStatus::Deleted => TenantStatus::Deleted,
+        }
+    }
+}
+
+impl From<GqlDeletedFilter> for DeletedFilter {
+    fn from(filter: GqlDeletedFilter) -> Self {
+        match filter {
+            GqlDeletedFilter::Live => DeletedFilter::Live,
+            GqlDeletedFilter::Deleted => DeletedFilter::Deleted,
+            GqlDeletedFilter::All => DeletedFilter::All,
         }
     }
 }

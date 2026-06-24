@@ -18,6 +18,40 @@ use crate::{
 
 pub const AUTHENTICATED_USERS_GROUP_ID: Uuid = Uuid::from_u128(5);
 
+pub async fn lock_active_entity(
+    tx: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+) -> Result<Option<(EntityKind, Option<Uuid>)>, AppError> {
+    let tenant_id: Option<Option<Uuid>> = sqlx::query_scalar(
+        r#"SELECT tenant_id
+           FROM entities
+           WHERE id = $1 AND status = 'active' AND deleted_at IS NULL"#,
+    )
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(db_err)?;
+    let Some(tenant_id) = tenant_id else {
+        return Ok(None);
+    };
+    crate::tenants::repo::lock_optional_active_tenant(tx, tenant_id).await?;
+
+    sqlx::query_as(
+        r#"SELECT kind, tenant_id
+           FROM entities
+           WHERE id = $1
+             AND tenant_id IS NOT DISTINCT FROM $2
+             AND status = 'active'
+             AND deleted_at IS NULL
+           FOR UPDATE"#,
+    )
+    .bind(id)
+    .bind(tenant_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(db_err)
+}
+
 pub async fn create_entity(pool: &PgPool, req: CreateEntity) -> Result<Entity, AppError> {
     let id = req.id.unwrap_or_else(Uuid::new_v4);
     let attrs = normalize_attributes(req.attributes);
@@ -34,12 +68,13 @@ pub async fn create_entity(pool: &PgPool, req: CreateEntity) -> Result<Entity, A
     let alias = crate::models::alias::validate_alias_opt(req.alias)?;
 
     let mut tx = pool.begin().await.map_err(db_err)?;
+    crate::tenants::repo::lock_optional_active_tenant(&mut tx, req.tenant_id).await?;
     let entity = sqlx::query_as::<_, Entity>(
         r#"INSERT INTO entities
            (id, kind, name, alias, tenant_id, profile_id, profile_version_id, attributes)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
            RETURNING id, kind, name, alias, tenant_id, profile_id, profile_version_id,
-                     status, attributes, created_at, updated_at"#,
+                     status, attributes, deleted_at, deleted_by, created_at, updated_at"#,
     )
     .bind(id)
     .bind(kind)
@@ -84,9 +119,9 @@ pub async fn add_authenticated_user_membership_in_tx(
 pub async fn get_entity(pool: &PgPool, id: Uuid) -> Result<Entity, AppError> {
     sqlx::query_as::<_, Entity>(
         r#"SELECT id, kind, name, alias, tenant_id, profile_id, profile_version_id,
-                  status, attributes, created_at, updated_at
+                  status, attributes, deleted_at, deleted_by, created_at, updated_at
            FROM entities
-           WHERE id = $1"#,
+           WHERE id = $1 AND deleted_at IS NULL"#,
     )
     .bind(id)
     .fetch_one(pool)
@@ -104,9 +139,9 @@ pub async fn list_entities_by_ids(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<Ent
 
     sqlx::query_as::<_, Entity>(
         r#"SELECT id, kind, name, alias, tenant_id, profile_id, profile_version_id,
-                  status, attributes, created_at, updated_at
+                  status, attributes, deleted_at, deleted_by, created_at, updated_at
            FROM entities
-           WHERE id = ANY($1::uuid[])
+           WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL
            ORDER BY array_position($1::uuid[], id)"#,
     )
     .bind(ids)
@@ -124,6 +159,7 @@ pub async fn list_entities(pool: &PgPool, params: ListEntities) -> Result<Entity
     let status = params.status;
     let parent_group_id = params.parent_group_id;
     let include_descendants = params.include_descendants;
+    let deleted = params.deleted.as_str();
     let q = search_pattern(params.q);
 
     let items = sqlx::query_as::<_, Entity>(
@@ -136,7 +172,7 @@ pub async fn list_entities(pool: &PgPool, params: ListEntities) -> Result<Entity
                WHERE $7::boolean
            )
            SELECT e.id, e.kind, e.name, e.alias, e.tenant_id, e.profile_id, e.profile_version_id,
-                  e.status, e.attributes, e.created_at, e.updated_at
+                  e.status, e.attributes, e.deleted_at, e.deleted_by, e.created_at, e.updated_at
            FROM entities e
            LEFT JOIN group_entity_parents gep ON gep.entity_id = e.id
            WHERE ($1::text IS NULL OR e.kind = $1)
@@ -145,6 +181,9 @@ pub async fn list_entities(pool: &PgPool, params: ListEntities) -> Result<Entity
              AND ($4::text IS NULL OR e.status = $4)
              AND ($5::text IS NULL OR e.name ILIKE $5 OR e.alias ILIKE $5 OR e.attributes::text ILIKE $5)
              AND ($6::uuid IS NULL OR gep.group_id IN (SELECT id FROM target_groups))
+             AND ($10::text = 'all'
+                  OR ($10::text = 'live' AND e.deleted_at IS NULL)
+                  OR ($10::text = 'deleted' AND e.deleted_at IS NOT NULL))
            ORDER BY e.created_at DESC
            LIMIT $8 OFFSET $9"#,
     )
@@ -157,6 +196,7 @@ pub async fn list_entities(pool: &PgPool, params: ListEntities) -> Result<Entity
     .bind(include_descendants)
     .bind(limit)
     .bind(offset)
+    .bind(deleted)
     .fetch_all(pool)
     .await
     .map_err(db_err)?;
@@ -178,7 +218,10 @@ pub async fn list_entities(pool: &PgPool, params: ListEntities) -> Result<Entity
              AND ($3::uuid IS NULL OR e.tenant_id = $3)
              AND ($4::text IS NULL OR e.status = $4)
              AND ($5::text IS NULL OR e.name ILIKE $5 OR e.alias ILIKE $5 OR e.attributes::text ILIKE $5)
-             AND ($6::uuid IS NULL OR gep.group_id IN (SELECT id FROM target_groups))"#,
+             AND ($6::uuid IS NULL OR gep.group_id IN (SELECT id FROM target_groups))
+             AND ($8::text = 'all'
+                  OR ($8::text = 'live' AND e.deleted_at IS NULL)
+                  OR ($8::text = 'deleted' AND e.deleted_at IS NOT NULL))"#,
     )
     .bind(kind)
     .bind(profile_id)
@@ -187,6 +230,7 @@ pub async fn list_entities(pool: &PgPool, params: ListEntities) -> Result<Entity
     .bind(q)
     .bind(parent_group_id)
     .bind(include_descendants)
+    .bind(deleted)
     .fetch_one(pool)
     .await
     .map_err(db_err)?;
@@ -210,6 +254,39 @@ pub async fn update_entity(pool: &PgPool, id: Uuid, req: UpdateEntity) -> Result
     let alias = alias.flatten();
 
     let mut tx = pool.begin().await.map_err(db_err)?;
+    let current_tenant_id: Option<Option<Uuid>> =
+        sqlx::query_scalar("SELECT tenant_id FROM entities WHERE id = $1 AND deleted_at IS NULL")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db_err)?;
+    let Some(current_tenant_id) = current_tenant_id else {
+        return Err(AppError::not_found(format!("entity {id} not found")));
+    };
+    let mut tenant_ids = [current_tenant_id, req.tenant_id]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    tenant_ids.sort_unstable();
+    tenant_ids.dedup();
+    for tenant_id in tenant_ids {
+        crate::tenants::repo::lock_active_tenant(&mut tx, tenant_id).await?;
+    }
+    let locked: Option<Uuid> = sqlx::query_scalar(
+        r#"SELECT id FROM entities
+           WHERE id = $1
+             AND tenant_id IS NOT DISTINCT FROM $2
+             AND deleted_at IS NULL
+           FOR UPDATE"#,
+    )
+    .bind(id)
+    .bind(current_tenant_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(db_err)?;
+    if locked.is_none() {
+        return Err(AppError::not_found(format!("entity {id} not found")));
+    }
     let entity = sqlx::query_as::<_, Entity>(
         r#"UPDATE entities
            SET name               = COALESCE($2, name),
@@ -221,9 +298,9 @@ pub async fn update_entity(pool: &PgPool, id: Uuid, req: UpdateEntity) -> Result
                attributes         = COALESCE($8, attributes),
                alias              = CASE WHEN $9 THEN $10 ELSE alias END,
                updated_at         = now()
-           WHERE id = $1
+           WHERE id = $1 AND deleted_at IS NULL
            RETURNING id, kind, name, alias, tenant_id, profile_id, profile_version_id,
-                     status, attributes, created_at, updated_at"#,
+                     status, attributes, deleted_at, deleted_by, created_at, updated_at"#,
     )
     .bind(id)
     .bind(req.name)
@@ -290,14 +367,32 @@ async fn set_entity_parent_group_in_tx(
     group_id: Uuid,
 ) -> Result<(), AppError> {
     use sqlx::Row;
+    let entity_tenant_id: Option<Option<Uuid>> =
+        sqlx::query_scalar("SELECT tenant_id FROM entities WHERE id = $1 AND deleted_at IS NULL")
+            .bind(entity_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(db_err)?;
+    let Some(entity_tenant_id) = entity_tenant_id else {
+        return Err(AppError::bad_request(
+            "entity parent group reference is invalid",
+        ));
+    };
+    crate::tenants::repo::lock_optional_active_tenant(tx, entity_tenant_id).await?;
+
     let row = sqlx::query(
         r#"SELECT e.tenant_id AS entity_tenant_id, g.tenant_id AS group_tenant_id
            FROM entities e
-           CROSS JOIN groups g
-           WHERE e.id = $1 AND g.id = $2"#,
+           CROSS JOIN object_groups g
+           WHERE e.id = $1 AND g.id = $2
+             AND e.tenant_id IS NOT DISTINCT FROM $3
+             AND e.deleted_at IS NULL
+             AND g.deleted_at IS NULL
+           FOR UPDATE OF e, g"#,
     )
     .bind(entity_id)
     .bind(group_id)
+    .bind(entity_tenant_id)
     .fetch_optional(&mut **tx)
     .await
     .map_err(db_err)?
@@ -335,6 +430,31 @@ async fn clear_entity_parent_group_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     entity_id: Uuid,
 ) -> Result<(), AppError> {
+    let tenant_id: Option<Option<Uuid>> =
+        sqlx::query_scalar("SELECT tenant_id FROM entities WHERE id = $1 AND deleted_at IS NULL")
+            .bind(entity_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(db_err)?;
+    let Some(tenant_id) = tenant_id else {
+        return Err(AppError::not_found(format!("entity {entity_id} not found")));
+    };
+    crate::tenants::repo::lock_optional_active_tenant(tx, tenant_id).await?;
+    let locked: Option<Uuid> = sqlx::query_scalar(
+        r#"SELECT id FROM entities
+           WHERE id = $1
+             AND tenant_id IS NOT DISTINCT FROM $2
+             AND deleted_at IS NULL
+           FOR UPDATE"#,
+    )
+    .bind(entity_id)
+    .bind(tenant_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(db_err)?;
+    if locked.is_none() {
+        return Err(AppError::not_found(format!("entity {entity_id} not found")));
+    }
     sqlx::query("DELETE FROM object_group_entities WHERE entity_id = $1")
         .bind(entity_id)
         .execute(&mut **tx)
@@ -477,15 +597,76 @@ fn entity_kind_as_str(kind: &EntityKind) -> &'static str {
     }
 }
 
-pub async fn delete_entity(pool: &PgPool, id: Uuid) -> Result<(), AppError> {
-    let result = sqlx::query("DELETE FROM entities WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await
-        .map_err(db_err)?;
+/// Soft-delete an entity: mark it inactive, set the tombstone, and immediately
+/// cut off access by revoking its credentials and active sessions. Physical
+/// removal is deferred to the purge cron. Hard delete (the old behavior) relied
+/// on FK cascade for the credential/session cleanup, so the revocations are now
+/// explicit.
+pub async fn delete_entity(
+    pool: &PgPool,
+    id: Uuid,
+    deleted_by: Option<Uuid>,
+) -> Result<(), AppError> {
+    let mut tx = pool.begin().await.map_err(db_err)?;
+
+    let result = sqlx::query(
+        "UPDATE entities
+         SET status = 'inactive', deleted_at = now(), deleted_by = $2, updated_at = now()
+         WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .bind(deleted_by)
+    .execute(&mut *tx)
+    .await
+    .map_err(db_err)?;
     if result.rows_affected() == 0 {
         return Err(AppError::not_found(format!("entity {id} not found")));
     }
+
+    let revoked_certificates: i64 = sqlx::query_scalar(
+        r#"WITH revoked AS (
+               UPDATE credentials
+               SET status = 'revoked',
+                   metadata = CASE
+                       WHEN kind = 'certificate'
+                       THEN metadata || jsonb_build_object(
+                           'revoked_at', now(),
+                           'revocation_reason', 'entity_deleted'
+                       )
+                       ELSE metadata
+                   END
+               WHERE entity_id = $1 AND status = 'active'
+               RETURNING kind
+           )
+           SELECT COUNT(*) FILTER (WHERE kind = 'certificate') FROM revoked"#,
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(db_err)?;
+    if revoked_certificates > 0 {
+        crate::certs::repo::mark_crl_dirty_tx(&mut tx).await?;
+    }
+    sqlx::query(
+        "UPDATE sessions SET revoked_at = now() WHERE entity_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await
+    .map_err(db_err)?;
+
+    // Tombstone the email so its address frees for re-registration / OAuth
+    // re-onboarding (the partial unique index excludes deleted rows).
+    sqlx::query(
+        "UPDATE entity_emails SET deleted_at = now(), updated_at = now()
+         WHERE entity_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await
+    .map_err(db_err)?;
+
+    tx.commit().await.map_err(db_err)?;
     Ok(())
 }
 
@@ -493,6 +674,22 @@ pub async fn delete_entity(pool: &PgPool, id: Uuid) -> Result<(), AppError> {
 
 pub async fn create_session(
     pool: &PgPool,
+    entity_id: Uuid,
+    expiry_secs: u64,
+) -> Result<Session, AppError> {
+    let mut tx = pool.begin().await.map_err(db_err)?;
+    if lock_active_entity(&mut tx, entity_id).await?.is_none() {
+        return Err(AppError::not_found(format!(
+            "active entity {entity_id} not found"
+        )));
+    }
+    let session = create_session_in_tx(&mut tx, entity_id, expiry_secs).await?;
+    tx.commit().await.map_err(db_err)?;
+    Ok(session)
+}
+
+pub(crate) async fn create_session_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
     entity_id: Uuid,
     expiry_secs: u64,
 ) -> Result<Session, AppError> {
@@ -507,7 +704,7 @@ pub async fn create_session(
     .bind(id)
     .bind(entity_id)
     .bind(expires_at)
-    .fetch_one(pool)
+    .fetch_one(&mut **tx)
     .await
     .map_err(db_err)
 }
@@ -543,50 +740,59 @@ pub async fn revoke_session(pool: &PgPool, id: Uuid) -> Result<(), AppError> {
 // ─── Groups ──────────────────────────────────────────────────────────────────
 
 pub async fn create_group(pool: &PgPool, req: CreateGroup) -> Result<Group, AppError> {
-    let id = req.id.unwrap_or_else(Uuid::new_v4);
-    let attrs = normalize_attributes(req.attributes);
-    let group_type = req.group_type.unwrap_or_else(|| "both".to_string());
-    match group_type.as_str() {
+    let CreateGroup {
+        id,
+        name,
+        tenant_id,
+        group_type,
+        description,
+        attributes,
+    } = req;
+    let id = id.unwrap_or_else(Uuid::new_v4);
+    let attrs = normalize_attributes(attributes);
+    let group_type = group_type.unwrap_or_else(|| "both".to_string());
+    let mut tx = pool.begin().await.map_err(db_err)?;
+    crate::tenants::repo::lock_optional_active_tenant(&mut tx, tenant_id).await?;
+    let group = match group_type.as_str() {
         "principal" => sqlx::query_as::<_, Group>(
             r#"INSERT INTO principal_groups (id, name, tenant_id, description, attributes)
                    VALUES ($1, $2, $3, $4, $5)
                    RETURNING id, name, tenant_id, 'principal'::text AS group_type, description,
                              NULL::uuid AS parent_id,
-                             status, attributes, created_at, updated_at"#,
+                             status, attributes, deleted_at, deleted_by, created_at, updated_at"#,
         )
         .bind(id)
-        .bind(req.name)
-        .bind(req.tenant_id)
-        .bind(req.description)
+        .bind(name)
+        .bind(tenant_id)
+        .bind(description)
         .bind(attrs)
-        .fetch_one(pool)
+        .fetch_one(&mut *tx)
         .await
-        .map_err(db_err),
+        .map_err(db_err)?,
         "object" => sqlx::query_as::<_, Group>(
             r#"INSERT INTO object_groups (id, name, tenant_id, description, attributes)
                    VALUES ($1, $2, $3, $4, $5)
                    RETURNING id, name, tenant_id, 'object'::text AS group_type, description,
                              NULL::uuid AS parent_id,
-                             status, attributes, created_at, updated_at"#,
+                             status, attributes, deleted_at, deleted_by, created_at, updated_at"#,
         )
         .bind(id)
-        .bind(req.name)
-        .bind(req.tenant_id)
-        .bind(req.description)
+        .bind(name)
+        .bind(tenant_id)
+        .bind(description)
         .bind(attrs)
-        .fetch_one(pool)
+        .fetch_one(&mut *tx)
         .await
-        .map_err(db_err),
+        .map_err(db_err)?,
         "both" => {
-            let mut tx = pool.begin().await.map_err(db_err)?;
             sqlx::query(
                 r#"INSERT INTO principal_groups (id, name, tenant_id, description, attributes)
                    VALUES ($1, $2, $3, $4, $5)"#,
             )
             .bind(id)
-            .bind(&req.name)
-            .bind(req.tenant_id)
-            .bind(&req.description)
+            .bind(&name)
+            .bind(tenant_id)
+            .bind(&description)
             .bind(&attrs)
             .execute(&mut *tx)
             .await
@@ -597,32 +803,35 @@ pub async fn create_group(pool: &PgPool, req: CreateGroup) -> Result<Group, AppE
                    VALUES ($1, $2, $3, $4, $5)
                    RETURNING id, name, tenant_id, 'object'::text AS group_type, description,
                              NULL::uuid AS parent_id,
-                             status, attributes, created_at, updated_at"#,
+                             status, attributes, deleted_at, deleted_by, created_at, updated_at"#,
             )
             .bind(id)
-            .bind(req.name)
-            .bind(req.tenant_id)
-            .bind(req.description)
+            .bind(name)
+            .bind(tenant_id)
+            .bind(description)
             .bind(attrs)
             .fetch_one(&mut *tx)
             .await
             .map_err(db_err)?;
-            tx.commit().await.map_err(db_err)?;
-            Ok(group)
+            group
         }
-        other => Err(AppError::bad_request(format!(
-            "unsupported group type '{other}'"
-        ))),
-    }
+        other => {
+            return Err(AppError::bad_request(format!(
+                "unsupported group type '{other}'"
+            )))
+        }
+    };
+    tx.commit().await.map_err(db_err)?;
+    Ok(group)
 }
 
 pub async fn get_group(pool: &PgPool, id: Uuid) -> Result<Group, AppError> {
     sqlx::query_as::<_, Group>(
         r#"SELECT g.id, g.name, g.tenant_id, g.group_type, g.description, gh.parent_id,
-                  g.status, g.attributes, g.created_at, g.updated_at
+                  g.status, g.attributes, g.deleted_at, g.deleted_by, g.created_at, g.updated_at
            FROM groups g
            LEFT JOIN group_hierarchy gh ON gh.child_id = g.id
-           WHERE g.id = $1"#,
+           WHERE g.id = $1 AND g.deleted_at IS NULL"#,
     )
     .bind(id)
     .fetch_one(pool)
@@ -640,10 +849,10 @@ pub async fn list_groups_by_ids(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<Group
 
     sqlx::query_as::<_, Group>(
         r#"SELECT g.id, g.name, g.tenant_id, g.group_type, g.description, gh.parent_id,
-                  g.status, g.attributes, g.created_at, g.updated_at
+                  g.status, g.attributes, g.deleted_at, g.deleted_by, g.created_at, g.updated_at
            FROM groups g
            LEFT JOIN group_hierarchy gh ON gh.child_id = g.id
-           WHERE g.id = ANY($1::uuid[])
+           WHERE g.id = ANY($1::uuid[]) AND g.deleted_at IS NULL
            ORDER BY array_position($1::uuid[], g.id)"#,
     )
     .bind(ids)
@@ -658,10 +867,11 @@ pub async fn list_groups(pool: &PgPool, params: ListGroups) -> Result<GroupList,
     let status = params.status;
     let q = search_pattern(params.q);
     let parent_id = params.parent_id;
+    let deleted = params.deleted.as_str();
 
     let items = sqlx::query_as::<_, Group>(
         r#"SELECT g.id, g.name, g.tenant_id, g.group_type, g.description, gh.parent_id,
-                  g.status, g.attributes, g.created_at, g.updated_at
+                  g.status, g.attributes, g.deleted_at, g.deleted_by, g.created_at, g.updated_at
            FROM groups g
            LEFT JOIN group_hierarchy gh ON gh.child_id = g.id
            WHERE ($1::uuid IS NULL OR g.tenant_id = $1)
@@ -670,6 +880,9 @@ pub async fn list_groups(pool: &PgPool, params: ListGroups) -> Result<GroupList,
              AND ($8::text IS NULL OR g.group_type = $8)
              AND (($4::uuid IS NULL AND $5::boolean = FALSE)
                   OR ($5::boolean = TRUE AND gh.parent_id = $4))
+             AND ($9::text = 'all'
+                  OR ($9::text = 'live' AND g.deleted_at IS NULL)
+                  OR ($9::text = 'deleted' AND g.deleted_at IS NOT NULL))
            ORDER BY g.created_at DESC
            LIMIT $6 OFFSET $7"#,
     )
@@ -681,6 +894,7 @@ pub async fn list_groups(pool: &PgPool, params: ListGroups) -> Result<GroupList,
     .bind(limit)
     .bind(offset)
     .bind(params.group_type.clone())
+    .bind(deleted)
     .fetch_all(pool)
     .await
     .map_err(db_err)?;
@@ -694,7 +908,10 @@ pub async fn list_groups(pool: &PgPool, params: ListGroups) -> Result<GroupList,
              AND ($3::text IS NULL OR g.name ILIKE $3 OR g.description ILIKE $3 OR g.attributes::text ILIKE $3)
              AND ($6::text IS NULL OR g.group_type = $6)
              AND (($4::uuid IS NULL AND $5::boolean = FALSE)
-                  OR ($5::boolean = TRUE AND gh.parent_id = $4))"#,
+                  OR ($5::boolean = TRUE AND gh.parent_id = $4))
+             AND ($7::text = 'all'
+                  OR ($7::text = 'live' AND g.deleted_at IS NULL)
+                  OR ($7::text = 'deleted' AND g.deleted_at IS NOT NULL))"#,
     )
     .bind(params.tenant_id)
     .bind(status)
@@ -702,6 +919,7 @@ pub async fn list_groups(pool: &PgPool, params: ListGroups) -> Result<GroupList,
     .bind(parent_id)
     .bind(parent_id.is_some())
     .bind(params.group_type)
+    .bind(deleted)
     .fetch_one(pool)
     .await
     .map_err(db_err)?;
@@ -711,7 +929,18 @@ pub async fn list_groups(pool: &PgPool, params: ListGroups) -> Result<GroupList,
 
 pub async fn update_group(pool: &PgPool, id: Uuid, req: UpdateGroup) -> Result<Group, AppError> {
     let attributes = req.attributes.map(normalize_attributes);
-    sqlx::query_as::<_, Group>(
+    let mut tx = pool.begin().await.map_err(db_err)?;
+    let tenant_id: Option<Option<Uuid>> =
+        sqlx::query_scalar("SELECT tenant_id FROM groups WHERE id = $1 AND deleted_at IS NULL")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db_err)?;
+    let Some(tenant_id) = tenant_id else {
+        return Err(AppError::not_found(format!("group {id} not found")));
+    };
+    crate::tenants::repo::lock_optional_active_tenant(&mut tx, tenant_id).await?;
+    let group = sqlx::query_as::<_, Group>(
         r#"WITH p AS (
              UPDATE principal_groups
              SET name        = COALESCE($2, name),
@@ -719,10 +948,10 @@ pub async fn update_group(pool: &PgPool, id: Uuid, req: UpdateGroup) -> Result<G
                  status      = COALESCE($4, status),
                  attributes  = COALESCE($5, attributes),
                  updated_at  = now()
-             WHERE id = $1
+             WHERE id = $1 AND deleted_at IS NULL
              RETURNING id, name, tenant_id, 'principal'::text AS group_type, description,
                        (SELECT parent_id FROM principal_group_hierarchy WHERE child_id = principal_groups.id) AS parent_id,
-                       status, attributes, created_at, updated_at
+                       status, attributes, deleted_at, deleted_by, created_at, updated_at
            ),
            o AS (
              UPDATE object_groups
@@ -731,10 +960,10 @@ pub async fn update_group(pool: &PgPool, id: Uuid, req: UpdateGroup) -> Result<G
                  status      = COALESCE($4, status),
                  attributes  = COALESCE($5, attributes),
                  updated_at  = now()
-             WHERE id = $1
+             WHERE id = $1 AND deleted_at IS NULL
              RETURNING id, name, tenant_id, 'object'::text AS group_type, description,
                        (SELECT parent_id FROM object_group_hierarchy WHERE child_id = object_groups.id) AS parent_id,
-                       status, attributes, created_at, updated_at
+                       status, attributes, deleted_at, deleted_by, created_at, updated_at
            )
            SELECT * FROM p
            UNION ALL
@@ -745,12 +974,14 @@ pub async fn update_group(pool: &PgPool, id: Uuid, req: UpdateGroup) -> Result<G
     .bind(req.description)
     .bind(req.status)
     .bind(attributes)
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await
     .map_err(|e| match e {
         sqlx::Error::RowNotFound => AppError::not_found(format!("group {id} not found")),
         other => AppError::Database(other),
-    })
+    })?;
+    tx.commit().await.map_err(db_err)?;
+    Ok(group)
 }
 
 pub async fn set_group_parent(
@@ -763,24 +994,37 @@ pub async fn set_group_parent(
     }
 
     use sqlx::Row;
-    let child = sqlx::query("SELECT tenant_id, group_type FROM groups WHERE id = $1")
-        .bind(child_id)
-        .fetch_one(pool)
-        .await
-        .map_err(|e| match e {
-            sqlx::Error::RowNotFound => AppError::not_found(format!("group {child_id} not found")),
-            other => AppError::Database(other),
-        })?;
-    let parent = sqlx::query("SELECT tenant_id, group_type FROM groups WHERE id = $1")
-        .bind(parent_id)
-        .fetch_one(pool)
-        .await
-        .map_err(|e| match e {
-            sqlx::Error::RowNotFound => {
-                AppError::not_found(format!("parent group {parent_id} not found"))
-            }
-            other => AppError::Database(other),
-        })?;
+    let mut tx = pool.begin().await.map_err(db_err)?;
+    let child = sqlx::query(
+        r#"SELECT tenant_id, group_type
+           FROM groups
+           WHERE id = $1 AND deleted_at IS NULL
+           ORDER BY CASE group_type WHEN 'object' THEN 0 ELSE 1 END
+           LIMIT 1"#,
+    )
+    .bind(child_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| match e {
+        sqlx::Error::RowNotFound => AppError::not_found(format!("group {child_id} not found")),
+        other => AppError::Database(other),
+    })?;
+    let parent = sqlx::query(
+        r#"SELECT tenant_id, group_type
+           FROM groups
+           WHERE id = $1 AND deleted_at IS NULL
+           ORDER BY CASE group_type WHEN 'object' THEN 0 ELSE 1 END
+           LIMIT 1"#,
+    )
+    .bind(parent_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| match e {
+        sqlx::Error::RowNotFound => {
+            AppError::not_found(format!("parent group {parent_id} not found"))
+        }
+        other => AppError::Database(other),
+    })?;
     let child_tenant_id: Option<Uuid> = child.try_get("tenant_id").unwrap_or(None);
     let parent_tenant_id: Option<Uuid> = parent.try_get("tenant_id").unwrap_or(None);
     let child_group_type: String = child
@@ -804,6 +1048,25 @@ pub async fn set_group_parent(
     } else {
         "object_group_hierarchy"
     };
+    let group_table = if child_group_type == "principal" {
+        "principal_groups"
+    } else {
+        "object_groups"
+    };
+    crate::tenants::repo::lock_optional_active_tenant(&mut tx, child_tenant_id).await?;
+    let lock_sql = format!(
+        "SELECT id FROM {group_table}
+         WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL
+         ORDER BY id FOR UPDATE"
+    );
+    let locked_ids: Vec<Uuid> = sqlx::query_scalar(&lock_sql)
+        .bind(vec![child_id, parent_id])
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    if locked_ids.len() != 2 {
+        return Err(AppError::bad_request("parent or child group was deleted"));
+    }
 
     let creates_cycle_sql = format!(
         r#"WITH RECURSIVE ancestors(id) AS (
@@ -818,7 +1081,7 @@ pub async fn set_group_parent(
     let creates_cycle: bool = sqlx::query_scalar(&creates_cycle_sql)
         .bind(parent_id)
         .bind(child_id)
-        .fetch_one(pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(db_err)?;
     if creates_cycle {
@@ -837,33 +1100,71 @@ pub async fn set_group_parent(
         .bind(parent_id)
         .bind(child_id)
         .bind(child_tenant_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(db_err)?;
 
     if child_group_type == "object" {
-        sqlx::query(
-            r#"INSERT INTO principal_group_hierarchy (parent_id, child_id, tenant_id)
-               SELECT $1, $2, $3
-               WHERE EXISTS (SELECT 1 FROM principal_groups WHERE id = $1)
-                 AND EXISTS (SELECT 1 FROM principal_groups WHERE id = $2)
-               ON CONFLICT (child_id) DO UPDATE
-               SET parent_id = EXCLUDED.parent_id,
-                   tenant_id = EXCLUDED.tenant_id,
-                   updated_at = now()"#,
+        let principal_ids: Vec<Uuid> = sqlx::query_scalar(
+            r#"SELECT id FROM principal_groups
+               WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL
+               ORDER BY id FOR UPDATE"#,
         )
-        .bind(parent_id)
-        .bind(child_id)
-        .bind(child_tenant_id)
-        .execute(pool)
+        .bind(vec![child_id, parent_id])
+        .fetch_all(&mut *tx)
         .await
         .map_err(db_err)?;
+        if principal_ids.len() == 2 {
+            sqlx::query(
+                r#"INSERT INTO principal_group_hierarchy (parent_id, child_id, tenant_id)
+                   VALUES ($1, $2, $3)
+                   ON CONFLICT (child_id) DO UPDATE
+                   SET parent_id = EXCLUDED.parent_id,
+                       tenant_id = EXCLUDED.tenant_id,
+                       updated_at = now()"#,
+            )
+            .bind(parent_id)
+            .bind(child_id)
+            .bind(child_tenant_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
+        }
     }
 
+    tx.commit().await.map_err(db_err)?;
     get_group(pool, child_id).await
 }
 
 pub async fn remove_group_parent(pool: &PgPool, child_id: Uuid) -> Result<(), AppError> {
+    let mut tx = pool.begin().await.map_err(db_err)?;
+    let tenant_id: Option<Option<Uuid>> =
+        sqlx::query_scalar("SELECT tenant_id FROM groups WHERE id = $1 AND deleted_at IS NULL")
+            .bind(child_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db_err)?;
+    let Some(tenant_id) = tenant_id else {
+        return Err(AppError::not_found(format!("group {child_id} not found")));
+    };
+    crate::tenants::repo::lock_optional_active_tenant(&mut tx, tenant_id).await?;
+    let object_locked: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM object_groups WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+    )
+    .bind(child_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(db_err)?;
+    let principal_locked: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM principal_groups WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+    )
+    .bind(child_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(db_err)?;
+    if object_locked.is_none() && principal_locked.is_none() {
+        return Err(AppError::not_found(format!("group {child_id} not found")));
+    }
     sqlx::query(
         r#"WITH p AS (
              DELETE FROM principal_group_hierarchy WHERE child_id = $1
@@ -871,9 +1172,10 @@ pub async fn remove_group_parent(pool: &PgPool, child_id: Uuid) -> Result<(), Ap
            DELETE FROM object_group_hierarchy WHERE child_id = $1"#,
     )
     .bind(child_id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(db_err)?;
+    tx.commit().await.map_err(db_err)?;
     Ok(())
 }
 
@@ -891,6 +1193,7 @@ pub async fn list_child_groups(
             group_type: Some("object".to_string()),
             parent_id: Some(parent_id),
             status: None,
+            deleted: crate::models::enums::DeletedFilter::Live,
             limit,
             offset,
         },
@@ -898,19 +1201,28 @@ pub async fn list_child_groups(
     .await
 }
 
-pub async fn delete_group(pool: &PgPool, id: Uuid) -> Result<(), AppError> {
+/// Soft-delete a group (principal or object) by setting its tombstone. Physical
+/// removal and membership/hierarchy cleanup are deferred to the purge cron.
+pub async fn delete_group(
+    pool: &PgPool,
+    id: Uuid,
+    deleted_by: Option<Uuid>,
+) -> Result<(), AppError> {
     let result = sqlx::query(
         r#"WITH p AS (
-             DELETE FROM principal_groups WHERE id = $1 RETURNING id
+             UPDATE principal_groups SET deleted_at = now(), deleted_by = $2
+             WHERE id = $1 AND deleted_at IS NULL RETURNING id
            ),
            o AS (
-             DELETE FROM object_groups WHERE id = $1 RETURNING id
+             UPDATE object_groups SET deleted_at = now(), deleted_by = $2
+             WHERE id = $1 AND deleted_at IS NULL RETURNING id
            )
            SELECT id FROM p
            UNION ALL
            SELECT id FROM o"#,
     )
     .bind(id)
+    .bind(deleted_by)
     .fetch_optional(pool)
     .await
     .map_err(db_err)?;
@@ -925,15 +1237,79 @@ pub async fn add_group_member(
     group_id: Uuid,
     entity_id: Uuid,
 ) -> Result<(), AppError> {
+    let mut tx = pool.begin().await.map_err(db_err)?;
+    let group_tenant_id: Option<Option<Uuid>> = sqlx::query_scalar(
+        r#"SELECT tenant_id FROM principal_groups
+           WHERE id = $1 AND status = 'active' AND deleted_at IS NULL"#,
+    )
+    .bind(group_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(db_err)?;
+    let entity_tenant_id: Option<Option<Uuid>> = sqlx::query_scalar(
+        r#"SELECT tenant_id FROM entities
+           WHERE id = $1 AND status = 'active' AND deleted_at IS NULL"#,
+    )
+    .bind(entity_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(db_err)?;
+    let (Some(group_tenant_id), Some(entity_tenant_id)) = (group_tenant_id, entity_tenant_id)
+    else {
+        return Err(AppError::bad_request(
+            "group membership requires a live active group and entity",
+        ));
+    };
+    let mut tenant_ids = [group_tenant_id, entity_tenant_id]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    tenant_ids.sort_unstable();
+    tenant_ids.dedup();
+    for tenant_id in tenant_ids {
+        crate::tenants::repo::lock_active_tenant(&mut tx, tenant_id).await?;
+    }
+    let group_locked: Option<Uuid> = sqlx::query_scalar(
+        r#"SELECT id FROM principal_groups
+           WHERE id = $1
+             AND tenant_id IS NOT DISTINCT FROM $2
+             AND status = 'active'
+             AND deleted_at IS NULL
+           FOR UPDATE"#,
+    )
+    .bind(group_id)
+    .bind(group_tenant_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(db_err)?;
+    let entity_locked: Option<Uuid> = sqlx::query_scalar(
+        r#"SELECT id FROM entities
+           WHERE id = $1
+             AND tenant_id IS NOT DISTINCT FROM $2
+             AND status = 'active'
+             AND deleted_at IS NULL
+           FOR UPDATE"#,
+    )
+    .bind(entity_id)
+    .bind(entity_tenant_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(db_err)?;
+    if group_locked.is_none() || entity_locked.is_none() {
+        return Err(AppError::bad_request(
+            "group membership target changed during validation",
+        ));
+    }
     crate::guardrails::validate_group_member(pool, group_id, entity_id).await?;
     sqlx::query(
         "INSERT INTO principal_group_members (group_id, entity_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
     )
     .bind(group_id)
     .bind(entity_id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(db_err)?;
+    tx.commit().await.map_err(db_err)?;
     Ok(())
 }
 
@@ -954,10 +1330,10 @@ pub async fn remove_group_member(
 pub async fn list_group_members(pool: &PgPool, group_id: Uuid) -> Result<Vec<Entity>, AppError> {
     sqlx::query_as::<_, Entity>(
         r#"SELECT e.id, e.kind, e.name, e.alias, e.tenant_id, e.profile_id, e.profile_version_id,
-                  e.status, e.attributes, e.created_at, e.updated_at
+                  e.status, e.attributes, e.deleted_at, e.deleted_by, e.created_at, e.updated_at
            FROM entities e
            JOIN principal_group_members gm ON gm.entity_id = e.id
-           WHERE gm.group_id = $1
+           WHERE gm.group_id = $1 AND e.deleted_at IS NULL
            ORDER BY e.name"#,
     )
     .bind(group_id)
@@ -967,11 +1343,16 @@ pub async fn list_group_members(pool: &PgPool, group_id: Uuid) -> Result<Vec<Ent
 }
 
 pub async fn get_entity_groups(pool: &PgPool, entity_id: Uuid) -> Result<Vec<Uuid>, AppError> {
-    sqlx::query_scalar("SELECT group_id FROM principal_group_members WHERE entity_id = $1")
-        .bind(entity_id)
-        .fetch_all(pool)
-        .await
-        .map_err(db_err)
+    sqlx::query_scalar(
+        r#"SELECT gm.group_id
+           FROM principal_group_members gm
+           JOIN principal_groups g ON g.id = gm.group_id AND g.deleted_at IS NULL
+           WHERE gm.entity_id = $1"#,
+    )
+    .bind(entity_id)
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)
 }
 
 // ─── Ownerships ──────────────────────────────────────────────────────────────
@@ -982,7 +1363,48 @@ pub async fn create_ownership(
     owned_id: Uuid,
     relation: String,
 ) -> Result<Ownership, AppError> {
-    sqlx::query_as::<_, Ownership>(
+    let mut tx = pool.begin().await.map_err(db_err)?;
+    let entity_rows: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as(
+        r#"SELECT id, tenant_id FROM entities
+           WHERE id = ANY($1::uuid[]) AND status = 'active' AND deleted_at IS NULL"#,
+    )
+    .bind(vec![owner_id, owned_id])
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(db_err)?;
+    let expected_entities = if owner_id == owned_id { 1 } else { 2 };
+    if entity_rows.len() != expected_entities {
+        return Err(AppError::bad_request(
+            "ownership requires live active entities",
+        ));
+    }
+    let mut tenant_ids = entity_rows
+        .iter()
+        .filter_map(|(_, tenant_id)| *tenant_id)
+        .collect::<Vec<_>>();
+    tenant_ids.sort_unstable();
+    tenant_ids.dedup();
+    for tenant_id in tenant_ids {
+        crate::tenants::repo::lock_active_tenant(&mut tx, tenant_id).await?;
+    }
+    let mut entity_ids = vec![owner_id, owned_id];
+    entity_ids.sort_unstable();
+    entity_ids.dedup();
+    let locked: Vec<Uuid> = sqlx::query_scalar(
+        r#"SELECT id FROM entities
+           WHERE id = ANY($1::uuid[]) AND status = 'active' AND deleted_at IS NULL
+           ORDER BY id FOR UPDATE"#,
+    )
+    .bind(&entity_ids)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(db_err)?;
+    if locked.len() != entity_ids.len() {
+        return Err(AppError::bad_request(
+            "ownership target changed during validation",
+        ));
+    }
+    let ownership = sqlx::query_as::<_, Ownership>(
         r#"INSERT INTO ownerships (owner_id, owned_id, relation)
            VALUES ($1, $2, $3)
            ON CONFLICT (owner_id, owned_id) DO UPDATE SET relation = EXCLUDED.relation
@@ -991,18 +1413,20 @@ pub async fn create_ownership(
     .bind(owner_id)
     .bind(owned_id)
     .bind(relation)
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await
-    .map_err(db_err)
+    .map_err(db_err)?;
+    tx.commit().await.map_err(db_err)?;
+    Ok(ownership)
 }
 
 pub async fn list_owned(pool: &PgPool, owner_id: Uuid) -> Result<Vec<Entity>, AppError> {
     sqlx::query_as::<_, Entity>(
         r#"SELECT e.id, e.kind, e.name, e.alias, e.tenant_id, e.profile_id, e.profile_version_id,
-                  e.status, e.attributes, e.created_at, e.updated_at
+                  e.status, e.attributes, e.deleted_at, e.deleted_by, e.created_at, e.updated_at
            FROM entities e
            JOIN ownerships o ON o.owned_id = e.id
-           WHERE o.owner_id = $1
+           WHERE o.owner_id = $1 AND e.deleted_at IS NULL
            ORDER BY e.created_at DESC"#,
     )
     .bind(owner_id)

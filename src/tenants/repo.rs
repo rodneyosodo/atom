@@ -8,7 +8,8 @@ use crate::{
     identity::service::{hash_secret, verify_secret},
     models::{
         entity::{Entity, EntityList},
-        enums::TenantStatus,
+        enums::{SubjectKind, TenantStatus},
+        policy::CreateRoleAssignment,
         tenant::{
             CreateTenant, CreateTenantInvitation, ListTenantInvitations, ListTenants, Tenant,
             TenantInvitation, TenantInvitationList, TenantList, UpdateTenant,
@@ -17,7 +18,7 @@ use crate::{
 };
 
 const TENANT_COLS: &str =
-    "id, name, alias, status, tags, attributes, created_by, updated_by, created_at, updated_at";
+    "id, name, alias, status, tags, attributes, created_by, updated_by, deleted_at, deleted_by, created_at, updated_at";
 const INVITATION_COLS: &str =
     "ti.id, ti.tenant_id, ti.invitee_user_id, ti.invitee_email, ti.invited_by,
      ti.role_id, r.name AS role_name, ti.accepted_at, ti.rejected_at,
@@ -27,6 +28,12 @@ pub struct CreatedInvitation {
     pub invitation: TenantInvitation,
     pub token: Option<String>,
     pub email: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PurgedTenant {
+    pub id: Uuid,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +74,38 @@ pub fn tenant_admin_bootstrap(tenant_id: Uuid, creator_id: Uuid) -> TenantAdminB
         ],
         scope_ref: tenant_id.to_string(),
     }
+}
+
+pub async fn lock_active_tenant(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: Uuid,
+) -> Result<(), AppError> {
+    let locked: Option<Uuid> = sqlx::query_scalar(
+        r#"SELECT id
+           FROM tenants
+           WHERE id = $1 AND status = 'active' AND deleted_at IS NULL
+           FOR UPDATE"#,
+    )
+    .bind(tenant_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(db_err)?;
+    if locked.is_none() {
+        return Err(AppError::not_found(format!(
+            "active tenant {tenant_id} not found"
+        )));
+    }
+    Ok(())
+}
+
+pub async fn lock_optional_active_tenant(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: Option<Uuid>,
+) -> Result<(), AppError> {
+    if let Some(tenant_id) = tenant_id {
+        lock_active_tenant(tx, tenant_id).await?;
+    }
+    Ok(())
 }
 
 pub async fn create_tenant(
@@ -223,14 +262,16 @@ async fn bootstrap_tenant_admin(
 }
 
 pub async fn get_tenant(pool: &PgPool, id: Uuid) -> Result<Tenant, AppError> {
-    sqlx::query_as::<_, Tenant>(&format!("SELECT {TENANT_COLS} FROM tenants WHERE id = $1"))
-        .bind(id)
-        .fetch_one(pool)
-        .await
-        .map_err(|e| match e {
-            sqlx::Error::RowNotFound => AppError::not_found(format!("tenant {id} not found")),
-            other => AppError::Database(other),
-        })
+    sqlx::query_as::<_, Tenant>(&format!(
+        "SELECT {TENANT_COLS} FROM tenants WHERE id = $1 AND deleted_at IS NULL"
+    ))
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| match e {
+        sqlx::Error::RowNotFound => AppError::not_found(format!("tenant {id} not found")),
+        other => AppError::Database(other),
+    })
 }
 
 pub async fn list_tenants(pool: &PgPool, params: ListTenants) -> Result<TenantList, AppError> {
@@ -239,6 +280,7 @@ pub async fn list_tenants(pool: &PgPool, params: ListTenants) -> Result<TenantLi
     let name = params.name;
     let alias = params.alias;
     let status = params.status;
+    let deleted = params.deleted.as_str();
     let q = search_pattern(params.q);
 
     let items = sqlx::query_as::<_, Tenant>(&format!(
@@ -247,6 +289,9 @@ pub async fn list_tenants(pool: &PgPool, params: ListTenants) -> Result<TenantLi
              AND ($2::text IS NULL OR lower(alias) = lower($2))
              AND ($3::text IS NULL OR status = $3)
              AND ($4::text IS NULL OR name ILIKE $4 OR alias ILIKE $4 OR array_to_string(tags, ',') ILIKE $4 OR attributes::text ILIKE $4)
+             AND ($7::text = 'all'
+                  OR ($7::text = 'live' AND deleted_at IS NULL)
+                  OR ($7::text = 'deleted' AND deleted_at IS NOT NULL))
            ORDER BY created_at DESC
            LIMIT $5 OFFSET $6"#,
     ))
@@ -256,6 +301,7 @@ pub async fn list_tenants(pool: &PgPool, params: ListTenants) -> Result<TenantLi
     .bind(q.clone())
     .bind(limit)
     .bind(offset)
+    .bind(deleted)
     .fetch_all(pool)
     .await
     .map_err(db_err)?;
@@ -265,12 +311,16 @@ pub async fn list_tenants(pool: &PgPool, params: ListTenants) -> Result<TenantLi
            WHERE ($1::text IS NULL OR name = $1)
              AND ($2::text IS NULL OR lower(alias) = lower($2))
              AND ($3::text IS NULL OR status = $3)
-             AND ($4::text IS NULL OR name ILIKE $4 OR alias ILIKE $4 OR array_to_string(tags, ',') ILIKE $4 OR attributes::text ILIKE $4)"#,
+             AND ($4::text IS NULL OR name ILIKE $4 OR alias ILIKE $4 OR array_to_string(tags, ',') ILIKE $4 OR attributes::text ILIKE $4)
+             AND ($5::text = 'all'
+                  OR ($5::text = 'live' AND deleted_at IS NULL)
+                  OR ($5::text = 'deleted' AND deleted_at IS NOT NULL))"#,
     )
     .bind(name)
     .bind(alias)
     .bind(status)
     .bind(q)
+    .bind(deleted)
     .fetch_one(pool)
     .await
     .map_err(db_err)?;
@@ -288,6 +338,7 @@ pub async fn list_tenants_for_entity(
     let name = params.name;
     let alias = params.alias;
     let status = params.status;
+    let deleted = params.deleted.as_str();
     let q = search_pattern(params.q);
     let access_actions = ["read", "manage"];
 
@@ -303,13 +354,13 @@ pub async fn list_tenants_for_entity(
     const CTES: &str = r#"WITH RECURSIVE subject_groups(group_id) AS (
             SELECT gm.group_id
             FROM group_members gm
-            JOIN groups g ON g.id = gm.group_id AND g.status = 'active' AND g.group_type = 'principal'
+            JOIN groups g ON g.id = gm.group_id AND g.status = 'active' AND g.group_type = 'principal' AND g.deleted_at IS NULL
             WHERE gm.entity_id = $1
             UNION ALL
             SELECT gh.parent_id
             FROM group_hierarchy gh
             JOIN subject_groups sg ON sg.group_id = gh.child_id
-            JOIN groups parent ON parent.id = gh.parent_id AND parent.status = 'active' AND parent.group_type = 'principal'
+            JOIN groups parent ON parent.id = gh.parent_id AND parent.status = 'active' AND parent.group_type = 'principal' AND parent.deleted_at IS NULL
         ),
         role_grants AS (
             SELECT rpb.role_id AS root_role_id,
@@ -384,7 +435,10 @@ pub async fn list_tenants_for_entity(
     let base_filter = r#"($2::text IS NULL OR t.name = $2)
              AND ($3::text IS NULL OR lower(t.alias) = lower($3))
              AND ($4::text IS NULL OR t.status = $4)
-             AND ($5::text IS NULL OR t.name ILIKE $5 OR t.alias ILIKE $5 OR array_to_string(t.tags, ',') ILIKE $5 OR t.attributes::text ILIKE $5)"#;
+             AND ($5::text IS NULL OR t.name ILIKE $5 OR t.alias ILIKE $5 OR array_to_string(t.tags, ',') ILIKE $5 OR t.attributes::text ILIKE $5)
+             AND ($9::text = 'all'
+                  OR ($9::text = 'live' AND t.deleted_at IS NULL)
+                  OR ($9::text = 'deleted' AND t.deleted_at IS NOT NULL))"#;
 
     let items = sqlx::query_as::<_, Tenant>(&format!(
         "{CTES} SELECT {TENANT_COLS} FROM tenants t \
@@ -398,6 +452,7 @@ pub async fn list_tenants_for_entity(
     .bind(access_actions.as_slice())
     .bind(limit)
     .bind(offset)
+    .bind(deleted)
     .fetch_all(pool)
     .await
     .map_err(db_err)?;
@@ -411,6 +466,9 @@ pub async fn list_tenants_for_entity(
     .bind(status)
     .bind(q)
     .bind(access_actions.as_slice())
+    .bind(0_i64)
+    .bind(0_i64)
+    .bind(deleted)
     .fetch_one(pool)
     .await
     .map_err(db_err)?;
@@ -435,7 +493,7 @@ pub async fn update_tenant(
                attributes = COALESCE($6, attributes),
                updated_by = $7,
                updated_at = now()
-           WHERE id = $1
+           WHERE id = $1 AND deleted_at IS NULL
            RETURNING {TENANT_COLS}"#,
     ))
     .bind(id)
@@ -453,7 +511,97 @@ pub async fn update_tenant(
     })
 }
 
-/// Sets `status` to a new value. `Deleted` is the soft-delete state.
+/// Soft-delete a tenant: mark `status = deleted`, stamp the tombstone, and
+/// immediately revoke every active credential and session of entities in the
+/// tenant. Physical removal (and the entity cascade) is deferred to the purge
+/// cron.
+pub async fn soft_delete_tenant(
+    pool: &PgPool,
+    id: Uuid,
+    deleted_by: Option<Uuid>,
+) -> Result<Tenant, AppError> {
+    let mut tx = pool.begin().await.map_err(db_err)?;
+
+    let tenant = sqlx::query_as::<_, Tenant>(&format!(
+        r#"UPDATE tenants
+           SET status = 'deleted', deleted_at = now(), deleted_by = $2,
+               updated_by = $2, updated_at = now()
+           WHERE id = $1 AND deleted_at IS NULL
+           RETURNING {TENANT_COLS}"#,
+    ))
+    .bind(id)
+    .bind(deleted_by)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| match e {
+        sqlx::Error::RowNotFound => AppError::not_found(format!("tenant {id} not found")),
+        other => AppError::Database(other),
+    })?;
+
+    let revoked_certificates: i64 = sqlx::query_scalar(
+        r#"WITH revoked AS (
+               UPDATE credentials c
+               SET status = 'revoked',
+                   metadata = CASE
+                       WHEN c.kind = 'certificate'
+                       THEN c.metadata || jsonb_build_object(
+                           'revoked_at', now(),
+                           'revocation_reason', 'tenant_deleted'
+                       )
+                       ELSE c.metadata
+                   END
+               FROM entities e
+               WHERE c.entity_id = e.id
+                 AND e.tenant_id = $1
+                 AND c.status = 'active'
+               RETURNING c.kind
+           )
+           SELECT COUNT(*) FILTER (WHERE kind = 'certificate') FROM revoked"#,
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(db_err)?;
+    if revoked_certificates > 0 {
+        crate::certs::repo::mark_crl_dirty_tx(&mut tx).await?;
+    }
+
+    sqlx::query(
+        "UPDATE sessions SET revoked_at = now()
+         WHERE revoked_at IS NULL
+           AND entity_id IN (SELECT id FROM entities WHERE tenant_id = $1)",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await
+    .map_err(db_err)?;
+
+    tx.commit().await.map_err(db_err)?;
+    Ok(tenant)
+}
+
+/// Physically remove a tenant that has already been soft-deleted, bypassing the
+/// purge retention window. This cascades to all tenant-owned data, so it is an
+/// explicit, deliberate admin action (a soft delete is required first).
+pub async fn purge_tenant(pool: &PgPool, id: Uuid) -> Result<PurgedTenant, AppError> {
+    let purged = sqlx::query_as::<_, (Uuid, String)>(
+        "DELETE FROM tenants
+         WHERE id = $1 AND deleted_at IS NOT NULL
+         RETURNING id, name",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(db_err)?;
+    let Some((id, name)) = purged else {
+        return Err(AppError::not_found(format!(
+            "no soft-deleted tenant {id} to purge"
+        )));
+    };
+    Ok(PurgedTenant { id, name })
+}
+
+/// Sets `status` to a new value (non-delete lifecycle: active/inactive/frozen).
 /// The row is retained so historical references (audit logs, attributes,
 /// etc.) remain resolvable.
 pub async fn change_tenant_status(
@@ -462,10 +610,16 @@ pub async fn change_tenant_status(
     status: TenantStatus,
     updated_by: Option<Uuid>,
 ) -> Result<Tenant, AppError> {
+    if status == TenantStatus::Deleted {
+        return Err(AppError::bad_request(
+            "use delete tenant to apply the soft-delete lifecycle",
+        ));
+    }
+
     sqlx::query_as::<_, Tenant>(&format!(
         r#"UPDATE tenants
            SET status = $2, updated_by = $3, updated_at = now()
-           WHERE id = $1
+           WHERE id = $1 AND deleted_at IS NULL
            RETURNING {TENANT_COLS}"#,
     ))
     .bind(id)
@@ -622,6 +776,7 @@ pub async fn list_user_invitations(
               OR EXISTS (
                   SELECT 1 FROM entity_emails ee
                   WHERE ee.entity_id = $1 AND lower(ee.email) = lower(ti.invitee_email)
+                    AND ee.deleted_at IS NULL
               )
            ORDER BY ti.created_at DESC
            LIMIT $2 OFFSET $3"#,
@@ -638,6 +793,7 @@ pub async fn list_user_invitations(
                   OR EXISTS (
                       SELECT 1 FROM entity_emails ee
                       WHERE ee.entity_id = $1 AND lower(ee.email) = lower(ti.invitee_email)
+                        AND ee.deleted_at IS NULL
                   )"#,
     )
     .bind(invitee_user_id)
@@ -660,11 +816,12 @@ pub async fn list_tenant_members(
 
     let items = sqlx::query_as::<_, Entity>(
         r#"SELECT e.id, e.kind, e.name, e.alias, e.tenant_id, e.profile_id, e.profile_version_id,
-                  e.status, e.attributes, e.created_at, e.updated_at
+                  e.status, e.attributes, e.deleted_at, e.deleted_by, e.created_at, e.updated_at
            FROM tenant_memberships tm
            JOIN entities e ON e.id = tm.entity_id
            WHERE tm.tenant_id = $1
              AND tm.status = 'active'
+             AND e.deleted_at IS NULL
              AND e.kind = 'human'
              AND ($2::text IS NULL OR e.name ILIKE $2 OR e.attributes::text ILIKE $2)
            ORDER BY e.created_at DESC
@@ -684,6 +841,7 @@ pub async fn list_tenant_members(
            JOIN entities e ON e.id = tm.entity_id
            WHERE tm.tenant_id = $1
              AND tm.status = 'active'
+             AND e.deleted_at IS NULL
              AND e.kind = 'human'
              AND ($2::text IS NULL OR e.name ILIKE $2 OR e.attributes::text ILIKE $2)"#,
     )
@@ -709,10 +867,11 @@ pub async fn list_tenant_assignable_entities(
 
     let items = sqlx::query_as::<_, Entity>(
         r#"SELECT e.id, e.kind, e.name, e.alias, e.tenant_id, e.profile_id, e.profile_version_id,
-                  e.status, e.attributes, e.created_at, e.updated_at
+                  e.status, e.attributes, e.deleted_at, e.deleted_by, e.created_at, e.updated_at
            FROM entities e
            WHERE e.kind = 'human'
              AND e.status = 'active'
+             AND e.deleted_at IS NULL
              AND ($2::text IS NULL OR e.name ILIKE $2 OR e.attributes::text ILIKE $2)
              AND NOT EXISTS (
                  SELECT 1
@@ -737,6 +896,7 @@ pub async fn list_tenant_assignable_entities(
            FROM entities e
            WHERE e.kind = 'human'
              AND e.status = 'active'
+             AND e.deleted_at IS NULL
              AND ($2::text IS NULL OR e.name ILIKE $2 OR e.attributes::text ILIKE $2)
              AND NOT EXISTS (
                  SELECT 1
@@ -815,13 +975,13 @@ pub async fn list_tenant_role_assignments(
         r#"WITH RECURSIVE subject_groups(group_id, path) AS (
              SELECT gm.group_id, g.name
              FROM group_members gm
-             JOIN groups g ON g.id = gm.group_id AND g.status = 'active'
+             JOIN groups g ON g.id = gm.group_id AND g.status = 'active' AND g.deleted_at IS NULL
              WHERE gm.entity_id = $2
              UNION ALL
              SELECT gh.parent_id, parent.name || ' -> ' || sg.path
              FROM group_hierarchy gh
              JOIN subject_groups sg ON sg.group_id = gh.child_id
-             JOIN groups parent ON parent.id = gh.parent_id AND parent.status = 'active'
+             JOIN groups parent ON parent.id = gh.parent_id AND parent.status = 'active' AND parent.deleted_at IS NULL
            ), assignments AS (
              SELECT ra.role_id, 'direct'::text AS assignment_path
              FROM role_assignments ra
@@ -847,7 +1007,7 @@ pub async fn list_tenant_role_assignments(
                     ORDER BY assignments.assignment_path
                   ) AS assignment_paths
            FROM assignments
-           JOIN roles r ON r.id = assignments.role_id
+           JOIN roles r ON r.id = assignments.role_id AND r.deleted_at IS NULL
            LEFT JOIN role_permission_blocks rpb ON rpb.role_id = r.id
            LEFT JOIN permission_block_actions pba ON pba.permission_block_id = rpb.permission_block_id
            LEFT JOIN actions a ON a.id = pba.action_id
@@ -878,8 +1038,11 @@ pub async fn accept_invitation(
     tenant_id: Uuid,
     invitee_user_id: Uuid,
 ) -> Result<(), AppError> {
-    let role_id: Option<Uuid> = accept_invitation_row(pool, tenant_id, invitee_user_id).await?;
-    grant_invitation_role(pool, tenant_id, invitee_user_id, role_id).await
+    let mut tx = pool.begin().await.map_err(db_err)?;
+    let role_id = accept_invitation_row(&mut tx, tenant_id, invitee_user_id).await?;
+    grant_invitation_role(&mut tx, pool, tenant_id, invitee_user_id, role_id).await?;
+    tx.commit().await.map_err(db_err)?;
+    Ok(())
 }
 
 pub async fn accept_invitation_token(
@@ -890,14 +1053,16 @@ pub async fn accept_invitation_token(
     let (token_id, token_secret) = parse_secret_token(token, "atomi")
         .ok_or_else(|| AppError::bad_request("invalid invitation token"))?;
 
+    let mut tx = pool.begin().await.map_err(db_err)?;
     let row = sqlx::query(
         r#"SELECT id, tenant_id, invitee_user_id, invitee_email, role_id,
                   secret_hash, expires_at, accepted_at, rejected_at, revoked_at
            FROM tenant_invitations
-           WHERE id = $1"#,
+           WHERE id = $1
+           FOR UPDATE"#,
     )
     .bind(token_id)
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await
     .map_err(|e| match e {
         sqlx::Error::RowNotFound => AppError::bad_request("invalid invitation token"),
@@ -945,26 +1110,35 @@ pub async fn accept_invitation_token(
                revoked_at = NULL,
                updated_at = now()
            WHERE id = $1 AND accepted_at IS NULL AND revoked_at IS NULL
+             AND rejected_at IS NULL
+             AND (expires_at IS NULL OR expires_at >= now())
            RETURNING role_id"#,
     )
     .bind(token_id)
     .bind(actor_id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(db_err)?
-    .flatten()
-    .or(role_id);
+    .ok_or_else(|| AppError::bad_request("invitation token expired"))?;
 
-    grant_invitation_role(pool, tenant_id, actor_id, updated_role_id).await?;
+    grant_invitation_role(
+        &mut tx,
+        pool,
+        tenant_id,
+        actor_id,
+        updated_role_id.or(role_id),
+    )
+    .await?;
+    tx.commit().await.map_err(db_err)?;
     Ok(tenant_id)
 }
 
 async fn accept_invitation_row(
-    pool: &PgPool,
+    tx: &mut Transaction<'_, Postgres>,
     tenant_id: Uuid,
     invitee_user_id: Uuid,
 ) -> Result<Option<Uuid>, AppError> {
-    sqlx::query_scalar(
+    sqlx::query_scalar::<_, Option<Uuid>>(
         r#"UPDATE tenant_invitations ti
            SET invitee_user_id = $2,
                accepted_by = $2,
@@ -974,27 +1148,37 @@ async fn accept_invitation_row(
                updated_at = now()
            WHERE ti.tenant_id = $1
              AND ti.revoked_at IS NULL
+             AND ti.accepted_at IS NULL
+             AND ti.rejected_at IS NULL
+             AND (ti.expires_at IS NULL OR ti.expires_at >= now())
              AND (ti.invitee_user_id = $2
                   OR EXISTS (
                       SELECT 1 FROM entity_emails ee
                       WHERE ee.entity_id = $2 AND lower(ee.email) = lower(ti.invitee_email)
+                        AND ee.deleted_at IS NULL
                   ))
            RETURNING role_id"#,
     )
     .bind(tenant_id)
     .bind(invitee_user_id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut **tx)
     .await
     .map_err(db_err)
-    .map(Option::flatten)
+    .and_then(|role_id| {
+        role_id.ok_or_else(|| AppError::not_found("tenant invitation not found or expired"))
+    })
 }
 
 async fn grant_invitation_role(
+    tx: &mut Transaction<'_, Postgres>,
     pool: &PgPool,
     tenant_id: Uuid,
     invitee_user_id: Uuid,
     role_id: Option<Uuid>,
 ) -> Result<(), AppError> {
+    lock_active_tenant(tx, tenant_id).await?;
+    crate::authz::repo::lock_live_entity_subject_in_tx(tx, Some(tenant_id), invitee_user_id)
+        .await?;
     sqlx::query(
         r#"INSERT INTO tenant_memberships (tenant_id, entity_id, status)
            VALUES ($1, $2, 'active')
@@ -1003,7 +1187,7 @@ async fn grant_invitation_role(
     )
     .bind(tenant_id)
     .bind(invitee_user_id)
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(db_err)?;
 
@@ -1011,24 +1195,17 @@ async fn grant_invitation_role(
         return Ok(());
     };
 
-    sqlx::query(
-        r#"INSERT INTO role_assignments
-             (tenant_id, subject_kind, subject_id, role_id)
-           SELECT $1, 'entity', $2, $3
-           WHERE NOT EXISTS (
-               SELECT 1 FROM role_assignments
-               WHERE tenant_id = $1
-                 AND subject_kind = 'entity'
-                 AND subject_id = $2
-                 AND role_id = $3
-           )"#,
+    crate::authz::repo::create_role_assignment_if_missing_in_tx(
+        pool,
+        tx,
+        &CreateRoleAssignment {
+            tenant_id: Some(tenant_id),
+            subject_kind: SubjectKind::Entity,
+            subject_id: invitee_user_id,
+            role_id,
+        },
     )
-    .bind(tenant_id)
-    .bind(invitee_user_id)
-    .bind(role_id)
-    .execute(pool)
-    .await
-    .map_err(db_err)?;
+    .await?;
     Ok(())
 }
 
@@ -1045,6 +1222,7 @@ pub async fn reject_invitation(
                   OR EXISTS (
                       SELECT 1 FROM entity_emails ee
                       WHERE ee.entity_id = $2 AND lower(ee.email) = lower(tenant_invitations.invitee_email)
+                        AND ee.deleted_at IS NULL
                   ))"#,
     )
     .bind(tenant_id)
@@ -1095,7 +1273,7 @@ async fn entity_id_by_email(pool: &PgPool, email: &str) -> Result<Option<Uuid>, 
     sqlx::query_scalar(
         r#"SELECT entity_id
            FROM entity_emails
-           WHERE lower(email) = lower($1)"#,
+           WHERE lower(email) = lower($1) AND deleted_at IS NULL"#,
     )
     .bind(email)
     .fetch_optional(pool)
@@ -1104,18 +1282,20 @@ async fn entity_id_by_email(pool: &PgPool, email: &str) -> Result<Option<Uuid>, 
 }
 
 async fn email_by_entity_id(pool: &PgPool, entity_id: Uuid) -> Result<Option<String>, AppError> {
-    sqlx::query_scalar("SELECT email FROM entity_emails WHERE entity_id = $1")
-        .bind(entity_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(db_err)
+    sqlx::query_scalar(
+        "SELECT email FROM entity_emails WHERE entity_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(entity_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(db_err)
 }
 
 async fn entity_has_email(pool: &PgPool, entity_id: Uuid, email: &str) -> Result<bool, AppError> {
     sqlx::query_scalar(
         r#"SELECT EXISTS (
                SELECT 1 FROM entity_emails
-               WHERE entity_id = $1 AND lower(email) = lower($2)
+               WHERE entity_id = $1 AND lower(email) = lower($2) AND deleted_at IS NULL
            )"#,
     )
     .bind(entity_id)
@@ -1283,6 +1463,7 @@ mod tests {
                 name: None,
                 alias: None,
                 status: Some(TenantStatus::Active),
+                deleted: crate::models::enums::DeletedFilter::Live,
                 limit: 100,
                 offset: 0,
             },
@@ -1332,7 +1513,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore]
-    async fn status_transitions_cover_all_variants() {
+    async fn status_transitions_cover_non_delete_variants() {
         let pool = pool().await;
         let t = create_tenant(
             &pool,
@@ -1351,13 +1532,17 @@ mod tests {
             TenantStatus::Inactive,
             TenantStatus::Frozen,
             TenantStatus::Active,
-            TenantStatus::Deleted,
         ] {
             let updated = change_tenant_status(&pool, t.id, next.clone(), None)
                 .await
                 .expect("change status");
             assert_eq!(updated.status, next);
         }
+        assert!(
+            change_tenant_status(&pool, t.id, TenantStatus::Deleted, None)
+                .await
+                .is_err()
+        );
         cleanup(&pool, &[t.id]).await;
     }
 
