@@ -1,7 +1,8 @@
 use axum::{
-    extract::DefaultBodyLimit,
+    extract::{DefaultBodyLimit, State},
     http::{header, HeaderValue, Method},
     middleware,
+    response::IntoResponse,
     routing::{any, get, post},
     Extension, Router,
 };
@@ -116,6 +117,19 @@ pub fn create_router(state: AppState) -> Router {
             post(keys::rotate_keys).layer(DefaultBodyLimit::max(auth_body_limit)),
         );
 
+    // Prometheus scrape endpoint. Mounted only when the operator enabled metrics
+    // (`config.metrics.enabled`) AND the recorder is actually installed
+    // (`metrics::enabled()`) — so it is never present under `--no-default-features`
+    // or when recorder installation failed, where it would otherwise return an
+    // empty 200. It exposes internal operational data and is unauthenticated by
+    // design — it must be network-restricted to the scraper (firewall / mesh /
+    // private network), see AGENTS.md.
+    let app = if state.config.metrics.enabled && crate::metrics::enabled() {
+        app.route("/metrics", get(metrics_handler))
+    } else {
+        app
+    };
+
     app.with_state(state)
         .layer(Extension(graphql_schema))
         .layer(middleware::from_fn_with_state(
@@ -124,6 +138,13 @@ pub fn create_router(state: AppState) -> Router {
         ))
         .layer(TraceLayer::new_for_http())
         .layer(cors)
+}
+
+async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
+        crate::metrics::render(&state.pool),
+    )
 }
 
 #[cfg(test)]
@@ -259,6 +280,83 @@ mod tests {
                 "email_verification_required": true,
                 "dev_allow_unverified_email_login": true
             })
+        );
+    }
+
+    #[tokio::test]
+    async fn metrics_route_absent_when_disabled() {
+        let mut state = test_state();
+        state.config.metrics.enabled = false;
+        let app = create_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[cfg(not(feature = "metrics"))]
+    #[tokio::test]
+    async fn metrics_route_absent_without_feature_even_when_configured() {
+        // Operator enabled metrics in config, but the crate was built without the
+        // `metrics` feature: the recorder cannot exist, so the route must not
+        // mount (otherwise it would serve an empty 200).
+        let mut state = test_state();
+        state.config.metrics.enabled = true;
+        let app = create_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[cfg(feature = "metrics")]
+    #[tokio::test]
+    async fn metrics_route_renders_series_when_enabled() {
+        // Process-global recorder install; idempotent across the test binary.
+        crate::metrics::init(true);
+        crate::metrics::record_decision(std::time::Duration::from_millis(1), true);
+
+        let state = test_state(); // for_tests() has metrics enabled
+        let app = create_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let body = String::from_utf8(body.to_vec()).expect("utf8 body");
+        assert!(
+            body.contains("atom_authz_decision_duration_seconds"),
+            "decision histogram missing from /metrics: {body}"
+        );
+        assert!(
+            body.contains("atom_db_pool_connections"),
+            "db pool gauge missing from /metrics: {body}"
         );
     }
 

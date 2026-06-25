@@ -17,12 +17,16 @@ pub struct Config {
     pub db_pool: DbPoolConfig,
     pub listen_addr: String,
     pub grpc_addr: String,
+    /// In-process TLS for the gRPC server. `None` = plaintext (the transport
+    /// must then be secured by the deployment: private network / service mesh).
+    pub grpc_tls: Option<GrpcTlsConfig>,
     pub signing_keys: SigningKeyConfig,
     pub audit_retention: AuditRetentionConfig,
     pub purge: PurgeConfig,
     pub rate_limits: RateLimitConfig,
     pub body_limits: BodyLimitConfig,
     pub graphql_limits: GraphqlLimitConfig,
+    pub metrics: MetricsConfig,
     pub jwt_expiry_secs: u64,
     pub jwt_issuer: String,
     pub jwt_audience: String,
@@ -250,6 +254,32 @@ impl Default for GraphqlLimitConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrpcTlsConfig {
+    /// PEM server certificate (chain) path.
+    pub cert_path: String,
+    /// PEM private key path.
+    pub key_path: String,
+    /// Optional PEM CA bundle. When set, the server requires and verifies client
+    /// certificates (mTLS); when unset, server-side TLS only.
+    pub client_ca_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MetricsConfig {
+    /// When true (default), the Prometheus recorder is installed at startup and
+    /// `/metrics` is mounted. Set ATOM_METRICS_ENABLED=false to skip both for
+    /// maximum-performance runs without a rebuild. (For a truly zero-cost build,
+    /// compile with `--no-default-features`.)
+    pub enabled: bool,
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CertsCaMode {
     FileIntermediateIssuer,
@@ -286,12 +316,16 @@ impl Config {
             listen_addr: std::env::var("LISTEN_ADDR")
                 .unwrap_or_else(|_| "0.0.0.0:8080".to_string()),
             grpc_addr: std::env::var("GRPC_ADDR").unwrap_or_else(|_| "0.0.0.0:8081".to_string()),
+            grpc_tls: grpc_tls_from_env()?,
             signing_keys: signing_keys_from_env()?,
             audit_retention: audit_retention_from_env()?,
             purge: purge_from_env()?,
             rate_limits: rate_limits_from_env()?,
             body_limits: body_limits_from_env()?,
             graphql_limits: graphql_limits_from_env()?,
+            metrics: MetricsConfig {
+                enabled: env_bool_default("ATOM_METRICS_ENABLED", true),
+            },
             jwt_expiry_secs: std::env::var("JWT_EXPIRY_SECS")
                 .unwrap_or_else(|_| "3600".to_string())
                 .parse()
@@ -362,6 +396,7 @@ impl Config {
             db_pool: DbPoolConfig::default(),
             listen_addr: "127.0.0.1:0".into(),
             grpc_addr: "127.0.0.1:0".into(),
+            grpc_tls: None,
             signing_keys: SigningKeyConfig {
                 allow_plaintext_signing_keys: true,
                 ..SigningKeyConfig::default()
@@ -374,6 +409,7 @@ impl Config {
             },
             body_limits: BodyLimitConfig::default(),
             graphql_limits: GraphqlLimitConfig::default(),
+            metrics: MetricsConfig::default(),
             jwt_expiry_secs: 3600,
             jwt_issuer: "http://localhost:8080".to_string(),
             jwt_audience: "magistrala".to_string(),
@@ -687,6 +723,39 @@ fn graphql_limits_from_env() -> Result<GraphqlLimitConfig> {
     Ok(cfg)
 }
 
+/// gRPC TLS is enabled when both cert and key paths are set. Setting only one is
+/// a misconfiguration and fails fast at startup. `client_ca_path` (mTLS) is
+/// independent and optional. Blank values are treated as unset for Compose.
+fn grpc_tls_from_env() -> Result<Option<GrpcTlsConfig>> {
+    let cert_path = nonempty_env("ATOM_GRPC_TLS_CERT_PATH");
+    let key_path = nonempty_env("ATOM_GRPC_TLS_KEY_PATH");
+    let client_ca_path = nonempty_env("ATOM_GRPC_TLS_CLIENT_CA_PATH");
+    match (cert_path, key_path) {
+        (Some(cert_path), Some(key_path)) => Ok(Some(GrpcTlsConfig {
+            cert_path,
+            key_path,
+            client_ca_path,
+        })),
+        (None, None) => {
+            if client_ca_path.is_some() {
+                anyhow::bail!(
+                    "ATOM_GRPC_TLS_CLIENT_CA_PATH is set but ATOM_GRPC_TLS_CERT_PATH/ATOM_GRPC_TLS_KEY_PATH are not"
+                );
+            }
+            Ok(None)
+        }
+        _ => anyhow::bail!(
+            "gRPC TLS requires both ATOM_GRPC_TLS_CERT_PATH and ATOM_GRPC_TLS_KEY_PATH"
+        ),
+    }
+}
+
+fn nonempty_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
 fn parse_cors_allowed_origins(public_base_url: &str) -> Vec<String> {
     std::env::var("ATOM_CORS_ALLOWED_ORIGINS")
         .ok()
@@ -800,6 +869,21 @@ mod tests {
     }
 
     #[test]
+    fn blank_grpc_tls_env_is_treated_as_unset() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        clear_hardening_env();
+        let _db_guard = DatabaseUrlGuard::set();
+        std::env::set_var("ATOM_GRPC_TLS_CERT_PATH", "");
+        std::env::set_var("ATOM_GRPC_TLS_KEY_PATH", " ");
+        std::env::set_var("ATOM_GRPC_TLS_CLIENT_CA_PATH", "");
+
+        let cfg = Config::from_env().expect("config");
+        assert!(cfg.grpc_tls.is_none());
+
+        clear_hardening_env();
+    }
+
+    #[test]
     fn graphql_introspection_opts_in_via_env() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         clear_hardening_env();
@@ -893,6 +977,9 @@ mod tests {
             "ATOM_RATE_LIMIT_ENABLED",
             "ATOM_TRUSTED_PROXY_CIDRS",
             "ATOM_GRAPHQL_INTROSPECTION_ENABLED",
+            "ATOM_GRPC_TLS_CERT_PATH",
+            "ATOM_GRPC_TLS_KEY_PATH",
+            "ATOM_GRPC_TLS_CLIENT_CA_PATH",
         ] {
             std::env::remove_var(name);
         }

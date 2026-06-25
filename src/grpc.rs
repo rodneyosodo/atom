@@ -1,9 +1,10 @@
 use std::net::SocketAddr;
 
+use anyhow::Context;
 use tokio::net::TcpListener;
 use tonic::{
     metadata::MetadataMap,
-    transport::{server::TcpIncoming, Server},
+    transport::{server::TcpIncoming, Certificate, Identity, Server, ServerTlsConfig},
     Request, Response, Status,
 };
 use uuid::Uuid;
@@ -434,7 +435,60 @@ pub async fn bind_listener(addr: SocketAddr) -> std::io::Result<TcpListener> {
     TcpListener::bind(addr).await
 }
 
-pub async fn serve(listener: TcpListener, state: AppState) -> anyhow::Result<()> {
+/// Load and validate the gRPC TLS config (if any) at startup, so a missing or
+/// invalid certificate aborts the process via `main` rather than only logging
+/// inside the spawned server task. Returns `None` when TLS is not configured.
+pub async fn load_tls_config(
+    cfg: &crate::config::Config,
+) -> anyhow::Result<Option<ServerTlsConfig>> {
+    match &cfg.grpc_tls {
+        Some(tls_cfg) => {
+            let tls = build_grpc_tls_config(tls_cfg)
+                .await
+                .with_context(|| "gRPC TLS configuration failed")?;
+            // Reading the files is not enough: tonic/rustls only parses and
+            // validates the cert, key, CA, and key/cert match when the config is
+            // applied to a builder. Do that here so malformed or mismatched PEM
+            // aborts startup instead of failing later inside the spawned task.
+            Server::builder()
+                .tls_config(tls.clone())
+                .with_context(|| "invalid gRPC TLS material")?;
+            tracing::info!(
+                mtls = tls_cfg.client_ca_path.is_some(),
+                "grpc TLS configured"
+            );
+            Ok(Some(tls))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Build the gRPC server TLS config from PEM files. With `client_ca_path` set,
+/// the server requires and verifies client certificates (mTLS).
+async fn build_grpc_tls_config(
+    cfg: &crate::config::GrpcTlsConfig,
+) -> anyhow::Result<ServerTlsConfig> {
+    let cert = tokio::fs::read(&cfg.cert_path)
+        .await
+        .with_context(|| format!("read gRPC TLS cert {}", cfg.cert_path))?;
+    let key = tokio::fs::read(&cfg.key_path)
+        .await
+        .with_context(|| format!("read gRPC TLS key {}", cfg.key_path))?;
+    let mut tls = ServerTlsConfig::new().identity(Identity::from_pem(cert, key));
+    if let Some(ca_path) = &cfg.client_ca_path {
+        let ca = tokio::fs::read(ca_path)
+            .await
+            .with_context(|| format!("read gRPC TLS client CA {ca_path}"))?;
+        tls = tls.client_ca_root(Certificate::from_pem(ca));
+    }
+    Ok(tls)
+}
+
+pub async fn serve(
+    listener: TcpListener,
+    state: AppState,
+    tls: Option<ServerTlsConfig>,
+) -> anyhow::Result<()> {
     let addr = listener.local_addr()?;
     tracing::info!("grpc listening on {addr}");
     let incoming = match TcpIncoming::from_listener(listener, true, None) {
@@ -462,11 +516,33 @@ pub async fn serve(listener: TcpListener, state: AppState) -> anyhow::Result<()>
         .set_serving::<AliasServiceServer<AtomAlias>>()
         .await;
 
+    // The TLS config was already loaded and validated in `load_tls_config`
+    // before this task was spawned (fail-fast at startup); here we only apply it.
+    let mut builder = Server::builder();
+    match tls {
+        Some(tls) => {
+            builder = match builder.tls_config(tls) {
+                Ok(builder) => builder,
+                Err(err) => {
+                    let message = format!("gRPC TLS setup failed on {addr}: {err}");
+                    state
+                        .set_grpc_status(GrpcRuntimeStatus::error(addr.to_string(), message.clone()))
+                        .await;
+                    anyhow::bail!(message);
+                }
+            };
+            tracing::info!("grpc TLS enabled");
+        }
+        None => tracing::warn!(
+            "grpc TLS not configured; transport is plaintext — restrict it to a private network or service mesh"
+        ),
+    }
+
     state
         .set_grpc_status(GrpcRuntimeStatus::serving(addr.to_string()))
         .await;
 
-    let result = Server::builder()
+    let result = builder
         .add_service(health_service)
         .add_service(AuthzServiceServer::new(AtomAuthz {
             state: state.clone(),
@@ -517,6 +593,88 @@ mod tests {
     };
 
     #[tokio::test]
+    async fn grpc_tls_config_builds_from_pem_files_and_mtls_ca() {
+        let dir = std::env::temp_dir().join(format!("atom-grpc-tls-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let server =
+            rcgen::generate_simple_self_signed(vec!["localhost".into()]).expect("server cert");
+        let ca = rcgen::generate_simple_self_signed(vec!["atom-ca".into()]).expect("ca cert");
+        let cert_path = dir.join("server.crt");
+        let key_path = dir.join("server.key");
+        let ca_path = dir.join("client-ca.crt");
+        std::fs::write(&cert_path, server.cert.pem()).expect("write cert");
+        std::fs::write(&key_path, server.signing_key.serialize_pem()).expect("write key");
+        std::fs::write(&ca_path, ca.cert.pem()).expect("write ca");
+
+        // Server-only TLS.
+        let cfg = crate::config::GrpcTlsConfig {
+            cert_path: cert_path.to_string_lossy().into_owned(),
+            key_path: key_path.to_string_lossy().into_owned(),
+            client_ca_path: None,
+        };
+        let tls = build_grpc_tls_config(&cfg).await.expect("server tls");
+        Server::builder().tls_config(tls).expect("apply server tls");
+
+        // mTLS (client CA present).
+        let mtls_cfg = crate::config::GrpcTlsConfig {
+            client_ca_path: Some(ca_path.to_string_lossy().into_owned()),
+            ..cfg
+        };
+        let mtls = build_grpc_tls_config(&mtls_cfg).await.expect("mtls");
+        Server::builder().tls_config(mtls).expect("apply mtls");
+
+        // Missing file fails (fast).
+        let missing = crate::config::GrpcTlsConfig {
+            cert_path: dir.join("nope.crt").to_string_lossy().into_owned(),
+            key_path: key_path.to_string_lossy().into_owned(),
+            client_ca_path: None,
+        };
+        assert!(build_grpc_tls_config(&missing).await.is_err());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn load_tls_config_rejects_malformed_and_mismatched_pem() {
+        let dir = std::env::temp_dir().join(format!("atom-grpc-tls-bad-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        // Two independent self-signed certs: cert from A, key from B = mismatch.
+        let a = rcgen::generate_simple_self_signed(vec!["localhost".into()]).expect("cert a");
+        let b = rcgen::generate_simple_self_signed(vec!["localhost".into()]).expect("cert b");
+        let cert_a = dir.join("a.crt");
+        let key_a = dir.join("a.key");
+        let key_b = dir.join("b.key");
+        let garbage = dir.join("garbage.crt");
+        std::fs::write(&cert_a, a.cert.pem()).expect("write cert a");
+        std::fs::write(&key_a, a.signing_key.serialize_pem()).expect("write key a");
+        std::fs::write(&key_b, b.signing_key.serialize_pem()).expect("write key b");
+        std::fs::write(
+            &garbage,
+            "-----BEGIN CERTIFICATE-----\nnot-base64-pem\n-----END CERTIFICATE-----\n",
+        )
+        .expect("write garbage");
+
+        let cfg_with = |cert: &std::path::Path, key: &std::path::Path| {
+            let mut cfg = Config::for_tests();
+            cfg.grpc_tls = Some(crate::config::GrpcTlsConfig {
+                cert_path: cert.to_string_lossy().into_owned(),
+                key_path: key.to_string_lossy().into_owned(),
+                client_ca_path: None,
+            });
+            cfg
+        };
+
+        // Matching cert/key validates and loads.
+        assert!(load_tls_config(&cfg_with(&cert_a, &key_a)).await.is_ok());
+        // Malformed (readable but unparseable) cert PEM is rejected at startup.
+        assert!(load_tls_config(&cfg_with(&garbage, &key_a)).await.is_err());
+        // A key that does not match the certificate is rejected at startup.
+        assert!(load_tls_config(&cfg_with(&cert_a, &key_b)).await.is_err());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
     async fn bind_listener_fails_when_address_is_in_use() {
         let first = bind_listener("127.0.0.1:0".parse().expect("addr"))
             .await
@@ -537,7 +695,7 @@ mod tests {
         let state = test_state();
         let grpc_state = state.clone();
         tokio::spawn(async move {
-            let _ = serve(listener, grpc_state).await;
+            let _ = serve(listener, grpc_state, None).await;
         });
 
         let mut client = health_client(addr).await;
