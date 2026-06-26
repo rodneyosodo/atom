@@ -11,29 +11,35 @@ pub struct AuditCleanupSummary {
     pub cutoff: chrono::DateTime<Utc>,
 }
 
-pub async fn write(
-    pool: &PgPool,
-    entity_id: Option<Uuid>,
-    tenant_id: Option<Uuid>,
-    event: &str,
-    outcome: AuditOutcome,
-    details: Value,
-) {
+pub struct AuditEvent<'a> {
+    pub actor_entity_id: Option<Uuid>,
+    pub tenant_id: Option<Uuid>,
+    pub target_kind: Option<&'a str>,
+    pub target_id: Option<Uuid>,
+    pub event: &'a str,
+    pub outcome: AuditOutcome,
+    pub details: Value,
+}
+
+pub async fn write(pool: &PgPool, event: AuditEvent<'_>) {
     let result = sqlx::query(
-        "INSERT INTO audit_logs (id, entity_id, tenant_id, event, outcome, details) VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO audit_logs (id, actor_entity_id, tenant_id, target_kind, target_id, event, outcome, details)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(Uuid::new_v4())
-    .bind(entity_id)
-    .bind(tenant_id)
-    .bind(event)
-    .bind(outcome)
-    .bind(details)
+    .bind(event.actor_entity_id)
+    .bind(event.tenant_id)
+    .bind(event.target_kind)
+    .bind(event.target_id)
+    .bind(event.event)
+    .bind(event.outcome)
+    .bind(event.details)
     .execute(pool)
     .await;
 
     if let Err(e) = result {
         crate::metrics::record_audit_failure();
-        tracing::error!("audit write failed event={event}: {e}");
+        tracing::error!("audit write failed event={}: {e}", event.event);
     }
 }
 
@@ -55,16 +61,20 @@ pub fn spawn_retention_cleanup(state: AppState) {
                 Ok(summary) if summary.deleted_rows > 0 => {
                     write(
                         &state.pool,
-                        None,
-                        None,
-                        "audit.retention_cleanup",
-                        AuditOutcome::Allow,
-                        serde_json::json!({
-                            "deleted_rows": summary.deleted_rows,
-                            "cutoff": summary.cutoff,
-                            "retention_days": cfg.days,
-                            "batch_size": cfg.cleanup_batch_size,
-                        }),
+                        AuditEvent {
+                            actor_entity_id: None,
+                            tenant_id: None,
+                            target_kind: None,
+                            target_id: None,
+                            event: "audit.retention_cleanup",
+                            outcome: AuditOutcome::Allow,
+                            details: serde_json::json!({
+                                "deleted_rows": summary.deleted_rows,
+                                "cutoff": summary.cutoff,
+                                "retention_days": cfg.days,
+                                "batch_size": cfg.cleanup_batch_size,
+                            }),
+                        },
                     )
                     .await;
                 }

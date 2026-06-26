@@ -748,7 +748,7 @@ pub async fn restore_entity(
 /// [`crate::authz::repo::purge_authz_references_for_ids`], together with the
 /// entity's credentials (which the entity delete cascades away but which can
 /// themselves be the object of a credential-scoped block).
-pub async fn purge_entity(pool: &PgPool, id: Uuid) -> Result<(), AppError> {
+pub async fn purge_entity(pool: &PgPool, id: Uuid) -> Result<Option<Uuid>, AppError> {
     let mut tx = pool.begin().await.map_err(db_err)?;
 
     // Capture the cascaded credential ids before the delete removes them, so the
@@ -760,25 +760,22 @@ pub async fn purge_entity(pool: &PgPool, id: Uuid) -> Result<(), AppError> {
             .await
             .map_err(db_err)?;
 
-    let deleted: Option<Uuid> = sqlx::query_scalar(
-        "DELETE FROM entities WHERE id = $1 AND deleted_at IS NOT NULL RETURNING id",
+    let purged_tenant_id: Option<Option<Uuid>> = sqlx::query_scalar(
+        "DELETE FROM entities WHERE id = $1 AND deleted_at IS NOT NULL RETURNING tenant_id",
     )
     .bind(id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(db_err)?;
-    if deleted.is_none() {
-        return Err(AppError::not_found(format!(
-            "no soft-deleted entity {id} to purge"
-        )));
-    }
+    let tenant_id = purged_tenant_id
+        .ok_or_else(|| AppError::not_found(format!("no soft-deleted entity {id} to purge")))?;
 
     let mut doomed = credential_ids;
     doomed.push(id);
     crate::authz::repo::purge_authz_references_for_ids(&mut tx, &doomed).await?;
 
     tx.commit().await.map_err(db_err)?;
-    Ok(())
+    Ok(tenant_id)
 }
 
 // ─── Sessions ────────────────────────────────────────────────────────────────
@@ -1382,36 +1379,33 @@ pub async fn restore_group(
 /// Object-scoped blocks (`object_id`) and direct/role grants to the group as a
 /// subject have no FK, so they are cleaned explicitly — see
 /// [`purge_object_authz_references`].
-pub async fn purge_group(pool: &PgPool, id: Uuid) -> Result<(), AppError> {
+pub async fn purge_group(pool: &PgPool, id: Uuid) -> Result<Option<Uuid>, AppError> {
     let mut tx = pool.begin().await.map_err(db_err)?;
 
-    let deleted: Option<Uuid> = sqlx::query_scalar(
+    let purged_tenant_id: Option<Option<Uuid>> = sqlx::query_scalar(
         r#"WITH p AS (
              DELETE FROM principal_groups
-             WHERE id = $1 AND deleted_at IS NOT NULL RETURNING id
+             WHERE id = $1 AND deleted_at IS NOT NULL RETURNING tenant_id
            ),
            o AS (
              DELETE FROM object_groups
-             WHERE id = $1 AND deleted_at IS NOT NULL RETURNING id
+             WHERE id = $1 AND deleted_at IS NOT NULL RETURNING tenant_id
            )
-           SELECT id FROM p
+           SELECT tenant_id FROM p
            UNION ALL
-           SELECT id FROM o"#,
+           SELECT tenant_id FROM o"#,
     )
     .bind(id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(db_err)?;
-    if deleted.is_none() {
-        return Err(AppError::not_found(format!(
-            "no soft-deleted group {id} to purge"
-        )));
-    }
+    let tenant_id = purged_tenant_id
+        .ok_or_else(|| AppError::not_found(format!("no soft-deleted group {id} to purge")))?;
 
     crate::authz::repo::purge_authz_references_for_ids(&mut tx, &[id]).await?;
 
     tx.commit().await.map_err(db_err)?;
-    Ok(())
+    Ok(tenant_id)
 }
 
 pub async fn add_group_member(

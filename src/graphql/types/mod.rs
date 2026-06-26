@@ -1373,12 +1373,20 @@ impl AuditLog {
         id(self.0.id)
     }
 
-    async fn entity_id(&self) -> Option<ID> {
-        self.0.entity_id.map(id)
+    async fn actor_entity_id(&self) -> Option<ID> {
+        self.0.actor_entity_id.map(id)
     }
 
     async fn tenant_id(&self) -> Option<ID> {
         self.0.tenant_id.map(id)
+    }
+
+    async fn target_kind(&self) -> Option<&str> {
+        self.0.target_kind.as_deref()
+    }
+
+    async fn target_id(&self) -> Option<ID> {
+        self.0.target_id.map(id)
     }
 
     async fn event(&self) -> &str {

@@ -58,11 +58,15 @@ impl CredentialMutation {
             .map_err(gql_error)?;
         audit::write(
             &state.pool,
-            Some(entity_id),
-            tenant_id,
-            "credential.create",
-            AuditOutcome::Allow,
-            serde_json::json!({"kind": "password"}),
+            audit::AuditEvent {
+                actor_entity_id: Some(auth.entity_id),
+                tenant_id,
+                target_kind: Some("entity"),
+                target_id: Some(entity_id),
+                event: "credential.create",
+                outcome: AuditOutcome::Allow,
+                details: serde_json::json!({"kind": "password"}),
+            },
         )
         .await;
         Ok(true)
@@ -90,11 +94,18 @@ impl CredentialMutation {
         .map_err(gql_error)?;
         audit::write(
             &state.pool,
-            Some(entity_id),
-            tenant_id,
-            "credential.create",
-            AuditOutcome::Allow,
-            serde_json::json!({"kind": "api_key", "credential_id": response.credential_id}),
+            audit::AuditEvent {
+                actor_entity_id: Some(auth.entity_id),
+                tenant_id,
+                target_kind: Some("entity"),
+                target_id: Some(entity_id),
+                event: "credential.create",
+                outcome: AuditOutcome::Allow,
+                details: serde_json::json!({
+                    "kind": "api_key",
+                    "credential_id": response.credential_id
+                }),
+            },
         )
         .await;
         Ok(response.into())
@@ -128,11 +139,15 @@ impl CredentialMutation {
             .map_err(gql_error)?;
         audit::write(
             &state.pool,
-            Some(auth.entity_id),
-            tenant_id,
-            "credential.revoke",
-            AuditOutcome::Allow,
-            serde_json::json!({"entity_id": entity_id, "credential_id": credential_id}),
+            audit::AuditEvent {
+                actor_entity_id: Some(auth.entity_id),
+                tenant_id,
+                target_kind: Some("entity"),
+                target_id: Some(entity_id),
+                event: "credential.revoke",
+                outcome: AuditOutcome::Allow,
+                details: serde_json::json!({"credential_id": credential_id}),
+            },
         )
         .await;
         Ok(true)

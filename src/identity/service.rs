@@ -121,11 +121,15 @@ pub async fn login_password_with_tenant(
 
     audit::write(
         pool,
-        entity_id_opt,
-        tenant_id_opt,
-        "auth.login",
-        outcome,
-        serde_json::json!({"identifier": identifier, "entity_id": entity_id_opt}),
+        audit::AuditEvent {
+            actor_entity_id: entity_id_opt,
+            tenant_id: tenant_id_opt,
+            target_kind: entity_id_opt.map(|_| "entity"),
+            target_id: entity_id_opt,
+            event: "auth.login",
+            outcome,
+            details: serde_json::json!({"identifier": identifier}),
+        },
     )
     .await;
 
@@ -316,11 +320,18 @@ pub async fn signup_human(
 
     audit::write(
         pool,
-        entity_id_opt,
-        None,
-        "auth.signup",
-        outcome,
-        serde_json::json!({"name": name, "email": normalize_email_lossy(&email), "entity_id": entity_id_opt}),
+        audit::AuditEvent {
+            actor_entity_id: entity_id_opt,
+            tenant_id: None,
+            target_kind: entity_id_opt.map(|_| "entity"),
+            target_id: entity_id_opt,
+            event: "auth.signup",
+            outcome,
+            details: serde_json::json!({
+                "name": name,
+                "email": normalize_email_lossy(&email),
+            }),
+        },
     )
     .await;
 

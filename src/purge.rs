@@ -44,16 +44,20 @@ pub fn spawn_purge_cleanup(state: AppState) {
                 Ok(summary) if summary.deleted_rows > 0 => {
                     audit::write(
                         &state.pool,
-                        None,
-                        None,
-                        "purge.cleanup",
-                        AuditOutcome::Allow,
-                        serde_json::json!({
-                            "deleted_rows": summary.deleted_rows,
-                            "cutoff": summary.cutoff,
-                            "retention_days": cfg.retention_days,
-                            "batch_size": cfg.batch_size,
-                        }),
+                        audit::AuditEvent {
+                            actor_entity_id: None,
+                            tenant_id: None,
+                            target_kind: None,
+                            target_id: None,
+                            event: "purge.cleanup",
+                            outcome: AuditOutcome::Allow,
+                            details: serde_json::json!({
+                                "deleted_rows": summary.deleted_rows,
+                                "cutoff": summary.cutoff,
+                                "retention_days": cfg.retention_days,
+                                "batch_size": cfg.batch_size,
+                            }),
+                        },
                     )
                     .await;
                 }

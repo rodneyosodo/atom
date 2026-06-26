@@ -121,16 +121,19 @@ impl CertificateMutation {
         .map_err(gql_error)?;
         audit::write(
             &state.pool,
-            Some(auth.entity_id),
-            tenant_id,
-            "certificate.issue",
-            AuditOutcome::Allow,
-            serde_json::json!({
-                "entity_id": entity_id,
-                "credential_id": issued.certificate.credential_id,
-                "serial_number": issued.certificate.serial_number,
-                "csr": false
-            }),
+            audit::AuditEvent {
+                actor_entity_id: Some(auth.entity_id),
+                tenant_id,
+                target_kind: Some("entity"),
+                target_id: Some(entity_id),
+                event: "certificate.issue",
+                outcome: AuditOutcome::Allow,
+                details: serde_json::json!({
+                    "credential_id": issued.certificate.credential_id,
+                    "serial_number": issued.certificate.serial_number,
+                    "csr": false
+                }),
+            },
         )
         .await;
         Ok(issued.into())
@@ -159,16 +162,19 @@ impl CertificateMutation {
         .map_err(gql_error)?;
         audit::write(
             &state.pool,
-            Some(auth.entity_id),
-            tenant_id,
-            "certificate.issue",
-            AuditOutcome::Allow,
-            serde_json::json!({
-                "entity_id": entity_id,
-                "credential_id": issued.certificate.credential_id,
-                "serial_number": issued.certificate.serial_number,
-                "csr": true
-            }),
+            audit::AuditEvent {
+                actor_entity_id: Some(auth.entity_id),
+                tenant_id,
+                target_kind: Some("entity"),
+                target_id: Some(entity_id),
+                event: "certificate.issue",
+                outcome: AuditOutcome::Allow,
+                details: serde_json::json!({
+                    "credential_id": issued.certificate.credential_id,
+                    "serial_number": issued.certificate.serial_number,
+                    "csr": true
+                }),
+            },
         )
         .await;
         Ok(issued.into())
@@ -199,15 +205,20 @@ impl CertificateMutation {
         .map_err(gql_error)?;
         audit::write(
             &state.pool,
-            Some(auth.entity_id),
-            old.tenant_id,
-            "certificate.renew",
-            AuditOutcome::Allow,
-            serde_json::json!({
-                "old_serial_number": old.serial_number,
-                "new_serial_number": issued.certificate.serial_number,
-                "new_credential_id": issued.certificate.credential_id
-            }),
+            audit::AuditEvent {
+                actor_entity_id: Some(auth.entity_id),
+                tenant_id: old.tenant_id,
+                target_kind: Some("credential"),
+                target_id: Some(old.credential_id),
+                event: "certificate.renew",
+                outcome: AuditOutcome::Allow,
+                details: serde_json::json!({
+                    "entity_id": old.entity_id,
+                    "old_serial_number": old.serial_number,
+                    "new_serial_number": issued.certificate.serial_number,
+                    "new_credential_id": issued.certificate.credential_id
+                }),
+            },
         )
         .await;
         Ok(issued.into())
@@ -229,14 +240,18 @@ impl CertificateMutation {
             .map_err(gql_error)?;
         audit::write(
             &state.pool,
-            Some(auth.entity_id),
-            cert.tenant_id,
-            "certificate.revoke",
-            AuditOutcome::Allow,
-            serde_json::json!({
-                "credential_id": cert.credential_id,
-                "serial_number": cert.serial_number
-            }),
+            audit::AuditEvent {
+                actor_entity_id: Some(auth.entity_id),
+                tenant_id: cert.tenant_id,
+                target_kind: Some("credential"),
+                target_id: Some(cert.credential_id),
+                event: "certificate.revoke",
+                outcome: AuditOutcome::Allow,
+                details: serde_json::json!({
+                    "entity_id": cert.entity_id,
+                    "serial_number": cert.serial_number
+                }),
+            },
         )
         .await;
         Ok(revoked.into())
@@ -257,11 +272,15 @@ impl CertificateMutation {
             .map_err(gql_error)?;
         audit::write(
             &state.pool,
-            Some(auth.entity_id),
-            tenant_id,
-            "certificate.revoke_entity",
-            AuditOutcome::Allow,
-            serde_json::json!({"entity_id": entity_id, "count": count}),
+            audit::AuditEvent {
+                actor_entity_id: Some(auth.entity_id),
+                tenant_id,
+                target_kind: Some("entity"),
+                target_id: Some(entity_id),
+                event: "certificate.revoke_entity",
+                outcome: AuditOutcome::Allow,
+                details: serde_json::json!({"count": count}),
+            },
         )
         .await;
         Ok(count as i64)

@@ -28,8 +28,10 @@ impl AdminQuery {
     async fn audit_logs(
         &self,
         ctx: &Context<'_>,
-        entity_id: Option<ID>,
+        actor_entity_id: Option<ID>,
         tenant_id: Option<ID>,
+        target_kind: Option<String>,
+        target_id: Option<ID>,
         event: Option<String>,
         outcome: Option<GqlAuditOutcome>,
         from: Option<String>,
@@ -41,8 +43,10 @@ impl AdminQuery {
         let state = ctx.data::<AppState>()?;
         let tenant_id = parse_optional_id(tenant_id, "tenantId")?;
         let params = AuditQuery {
-            entity_id: parse_optional_id(entity_id, "entityId")?,
+            actor_entity_id: parse_optional_id(actor_entity_id, "actorEntityId")?,
             tenant_id,
+            target_kind,
+            target_id: parse_optional_id(target_id, "targetId")?,
             event,
             outcome: parse_optional_audit_outcome(outcome),
             from: parse_optional_timestamp(from, "from")?,
@@ -66,8 +70,10 @@ impl AdminQuery {
         let auth = require_auth(ctx)?;
         let state = ctx.data::<AppState>()?;
         let params = AuditQuery {
-            entity_id: Some(parse_id(entity_id, "entityId")?),
+            actor_entity_id: None,
             tenant_id: None,
+            target_kind: Some("entity".to_string()),
+            target_id: Some(parse_id(entity_id, "entityId")?),
             event: None,
             outcome: None,
             from: None,

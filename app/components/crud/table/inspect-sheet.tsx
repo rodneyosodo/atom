@@ -3,7 +3,10 @@ import Link from "next/link";
 import { ActionApplicabilityInspectDetails } from "@/components/actions/action-applicability-inspect-details";
 import { DetailFields } from "@/components/crud/table/detail-fields";
 import type { Row } from "@/components/crud/table/types";
-import { EntityAuditLog } from "@/components/entities/entity-audit-log";
+import {
+  EntityAuditLog,
+  ObjectAuditLog,
+} from "@/components/entities/entity-audit-log";
 import { EntityCredentials } from "@/components/entities/entity-credentials";
 import { EntityInspectDetails } from "@/components/entities/entity-inspect-details";
 import { GroupInspectDetails } from "@/components/groups/group-inspect-details";
@@ -118,10 +121,25 @@ function InspectBody({
   }
   if (resourceKey === "resources") {
     return (
-      <>
-        <ResourceInspectDetails row={inspected} />
-        <InspectAuthzAction resourceKey={resourceKey} row={inspected} />
-      </>
+      <Tabs defaultValue="details">
+        <TabsList className="mb-4">
+          <TabsTrigger value="details">Details</TabsTrigger>
+          <TabsTrigger value="audit">Audit Logs</TabsTrigger>
+        </TabsList>
+        <TabsContent value="details" className="grid gap-3">
+          <ResourceInspectDetails row={inspected} />
+          <InspectAuthzAction resourceKey={resourceKey} row={inspected} />
+        </TabsContent>
+        <TabsContent value="audit">
+          {inspected?.id ? (
+            <ObjectAuditLog
+              emptyLabel="No audit logs for this resource."
+              targetId={String(inspected.id)}
+              targetKind="resource"
+            />
+          ) : null}
+        </TabsContent>
+      </Tabs>
     );
   }
   if (resourceKey === "roles") {
@@ -189,6 +207,7 @@ function usesWideInspectSheet(resourceKey: string) {
     "profiles",
     "tenants",
     "entities",
+    "resources",
     "groups",
     "roles",
     "policies",

@@ -35,6 +35,13 @@ use proto::{
     RevokeEntityCertificatesResponse,
 };
 
+fn authz_request_target(req: &AuthzRequest) -> (Option<&str>, Option<Uuid>) {
+    match (req.object_kind.as_deref(), req.object_id) {
+        (Some(kind), Some(id)) => (Some(kind), Some(id)),
+        _ => (req.resource_id.map(|_| "resource"), req.resource_id),
+    }
+}
+
 // ─── AuthzService ─────────────────────────────────────────────────────────────
 
 struct AtomAuthz {
@@ -106,25 +113,30 @@ impl AuthzService for AtomAuthz {
         let resp = engine::evaluate(&self.state.pool, &authz_req)
             .await
             .map_err(Status::from)?;
+        let (target_kind, target_id) = authz_request_target(&authz_req);
         audit::write(
             &self.state.pool,
-            Some(auth.entity_id),
-            tenant_id,
-            "authz.check",
-            if resp.allowed {
-                AuditOutcome::Allow
-            } else {
-                AuditOutcome::Deny
+            audit::AuditEvent {
+                actor_entity_id: Some(auth.entity_id),
+                tenant_id,
+                target_kind,
+                target_id,
+                event: "authz.check",
+                outcome: if resp.allowed {
+                    AuditOutcome::Allow
+                } else {
+                    AuditOutcome::Deny
+                },
+                details: serde_json::json!({
+                    "subject_id": authz_req.subject_id,
+                    "action": authz_req.action,
+                    "resource_id": authz_req.resource_id,
+                    "object_kind": authz_req.object_kind,
+                    "object_id": authz_req.object_id,
+                    "reason": resp.reason,
+                    "transport": "grpc",
+                }),
             },
-            serde_json::json!({
-                "subject_id": authz_req.subject_id,
-                "action": authz_req.action,
-                "resource_id": authz_req.resource_id,
-                "object_kind": authz_req.object_kind,
-                "object_id": authz_req.object_id,
-                "reason": resp.reason,
-                "transport": "grpc",
-            }),
         )
         .await;
 
@@ -220,18 +232,20 @@ impl AuthService for AtomAuth {
         let credential_id = result.as_ref().ok().map(|auth| auth.credential_id);
         audit::write(
             &self.state.pool,
-            Some(auth.entity_id),
-            tenant_id,
-            "auth.credential_authenticate",
-            outcome,
-            serde_json::json!({
-                "caller_entity_id": auth.entity_id,
-                "entity_id": entity_id,
-                "credential_id": credential_id,
-                "credential_kind": "password",
-                "identifier": req.identifier,
-                "transport": "grpc",
-            }),
+            audit::AuditEvent {
+                actor_entity_id: Some(auth.entity_id),
+                tenant_id,
+                target_kind: credential_id.map(|_| "credential"),
+                target_id: credential_id,
+                event: "auth.credential_authenticate",
+                outcome,
+                details: serde_json::json!({
+                    "entity_id": entity_id,
+                    "credential_kind": "password",
+                    "identifier": req.identifier,
+                    "transport": "grpc",
+                }),
+            },
         )
         .await;
 
@@ -342,11 +356,15 @@ impl CertificateService for AtomCertificates {
         .map_err(Status::from)?;
         audit::write(
             &self.state.pool,
-            Some(auth.entity_id),
-            tenant_id,
-            "certificate.revoke_entity",
-            AuditOutcome::Allow,
-            serde_json::json!({"entity_id": entity_id, "count": revoked, "transport": "grpc"}),
+            audit::AuditEvent {
+                actor_entity_id: Some(auth.entity_id),
+                tenant_id,
+                target_kind: Some("entity"),
+                target_id: Some(entity_id),
+                event: "certificate.revoke_entity",
+                outcome: AuditOutcome::Allow,
+                details: serde_json::json!({"count": revoked, "transport": "grpc"}),
+            },
         )
         .await;
 

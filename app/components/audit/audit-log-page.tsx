@@ -96,8 +96,10 @@ const AUDIT_LOGS_QUERY = `
         id
         event
         outcome
-        entityId
+        actorEntityId
         tenantId
+        targetKind
+        targetId
         details
         createdAt
       }
@@ -129,8 +131,10 @@ type AuditLogItem = {
   id: string;
   event: string;
   outcome: string;
-  entityId: string | null;
+  actorEntityId: string | null;
   tenantId: string | null;
+  targetKind: string | null;
+  targetId: string | null;
   details: Record<string, unknown>;
   createdAt: string;
 };
@@ -256,7 +260,10 @@ export function AuditLogPage() {
 
   const nameMap = useNameMap({
     entityIds: items
-      .map((i) => i.entityId)
+      .flatMap((i) => [
+        i.actorEntityId,
+        i.targetKind === "entity" ? i.targetId : null,
+      ])
       .filter((id): id is string => Boolean(id)),
   });
 
@@ -280,8 +287,8 @@ export function AuditLogPage() {
         cell: ({ getValue }) => <StatusBadge value={getValue()} />,
       },
       {
-        accessorKey: "entityId",
-        header: "Entity",
+        accessorKey: "actorEntityId",
+        header: "Actor",
         cell: ({ getValue }) => {
           const v = getValue() as string | null;
           if (!v)
@@ -294,6 +301,23 @@ export function AuditLogPage() {
               {v.slice(0, 8)}…
             </span>
           );
+        },
+      },
+      {
+        id: "target",
+        header: "Target",
+        cell: ({ row }) => {
+          const { targetKind, targetId } = row.original;
+          if (!targetKind && !targetId) {
+            return <span className="text-xs text-muted-foreground">—</span>;
+          }
+          const label =
+            targetKind === "entity" && targetId
+              ? (nameMap.get(targetId) ?? `${targetId.slice(0, 8)}…`)
+              : targetId
+                ? `${targetKind ?? "object"}:${targetId.slice(0, 8)}…`
+                : (targetKind ?? "object");
+          return <span className="text-sm">{label}</span>;
         },
       },
       {
@@ -747,13 +771,24 @@ function PageLink({
 function AuditInspect({ item }: { item: AuditLogItem }) {
   const [copied, setCopied] = React.useState(false);
 
-  const entityQ = useQuery({
-    enabled: Boolean(item.entityId),
-    queryKey: ["audit-inspect-entity", item.entityId],
+  const actorQ = useQuery({
+    enabled: Boolean(item.actorEntityId),
+    queryKey: ["audit-inspect-actor", item.actorEntityId],
     queryFn: ({ signal }) =>
       graphqlClient<{ entity: { id: string; name: string; kind: string } }>({
         query: AUDIT_INSPECT_ENTITY_QUERY,
-        variables: { id: item.entityId },
+        variables: { id: item.actorEntityId },
+        signal,
+      }),
+    staleTime: 60_000,
+  });
+  const targetEntityQ = useQuery({
+    enabled: item.targetKind === "entity" && Boolean(item.targetId),
+    queryKey: ["audit-inspect-target-entity", item.targetId],
+    queryFn: ({ signal }) =>
+      graphqlClient<{ entity: { id: string; name: string; kind: string } }>({
+        query: AUDIT_INSPECT_ENTITY_QUERY,
+        variables: { id: item.targetId },
         signal,
       }),
     staleTime: 60_000,
@@ -770,9 +805,16 @@ function AuditInspect({ item }: { item: AuditLogItem }) {
     staleTime: 60_000,
   });
 
-  const entityName = entityQ.data?.entity
-    ? `${entityQ.data.entity.name} (${entityQ.data.entity.kind})`
-    : (item.entityId ?? null);
+  const actorName = actorQ.data?.entity
+    ? `${actorQ.data.entity.name} (${actorQ.data.entity.kind})`
+    : (item.actorEntityId ?? null);
+  const targetName = targetEntityQ.data?.entity
+    ? `${targetEntityQ.data.entity.name} (${targetEntityQ.data.entity.kind})`
+    : item.targetId
+      ? item.targetKind
+        ? `${item.targetKind}:${item.targetId}`
+        : item.targetId
+      : null;
   const tenantName = tenantQ.data?.tenant.name ?? item.tenantId;
 
   function copyId() {
@@ -810,9 +852,17 @@ function AuditInspect({ item }: { item: AuditLogItem }) {
         <StatusBadge value={item.outcome} />
       </Field>
 
-      <Field label="Entity">
-        {entityName ? (
-          <span className="text-sm">{entityName}</span>
+      <Field label="Actor">
+        {actorName ? (
+          <span className="text-sm">{actorName}</span>
+        ) : (
+          <span className="text-sm text-muted-foreground">—</span>
+        )}
+      </Field>
+
+      <Field label="Target">
+        {targetName ? (
+          <span className="break-all text-sm">{targetName}</span>
         ) : (
           <span className="text-sm text-muted-foreground">—</span>
         )}

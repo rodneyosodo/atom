@@ -826,21 +826,26 @@ AS $$
 $$;
 
 CREATE TABLE audit_logs (
-    id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id   UUID        REFERENCES tenants(id) ON DELETE SET NULL,
-    entity_id   UUID        REFERENCES entities(id) ON DELETE SET NULL,
-    event       TEXT        NOT NULL,
-    outcome     TEXT        NOT NULL CHECK (outcome IN ('allow', 'deny', 'error')),
-    details     JSONB       NOT NULL DEFAULT '{}',
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    actor_entity_id UUID        REFERENCES entities(id) ON DELETE SET NULL,
+    tenant_id       UUID        REFERENCES tenants(id) ON DELETE SET NULL,
+    target_kind     TEXT,
+    target_id       UUID,
+    event           TEXT        NOT NULL,
+    outcome         TEXT        NOT NULL CHECK (outcome IN ('allow', 'deny', 'error')),
+    details         JSONB       NOT NULL DEFAULT '{}',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX idx_audit_tenant ON audit_logs(tenant_id);
-CREATE INDEX idx_audit_entity ON audit_logs(entity_id);
+CREATE INDEX idx_audit_actor ON audit_logs(actor_entity_id);
+CREATE INDEX idx_audit_target ON audit_logs(target_kind, target_id);
 CREATE INDEX idx_audit_event ON audit_logs(event);
 CREATE INDEX idx_audit_time ON audit_logs(created_at DESC);
 CREATE INDEX idx_audit_tenant_time
     ON audit_logs(tenant_id, created_at DESC);
+CREATE INDEX idx_audit_target_time
+    ON audit_logs(target_kind, target_id, created_at DESC);
 CREATE INDEX idx_audit_event_time
     ON audit_logs(event, created_at DESC);
 

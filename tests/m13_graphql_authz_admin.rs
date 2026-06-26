@@ -54,6 +54,36 @@ fn authed_as(entity_id: Uuid, query: impl Into<String>) -> Request {
     })
 }
 
+async fn latest_entity_audit_details(
+    pool: &PgPool,
+    entity_id: Uuid,
+    event: &str,
+) -> serde_json::Value {
+    sqlx::query_scalar(
+        "SELECT details FROM audit_logs WHERE target_kind = 'entity' AND target_id = $1 AND event = $2 ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(entity_id)
+    .bind(event)
+    .fetch_one(pool)
+    .await
+    .expect("entity audit event")
+}
+
+async fn latest_resource_audit_details(
+    pool: &PgPool,
+    resource_id: Uuid,
+    event: &str,
+) -> serde_json::Value {
+    sqlx::query_scalar(
+        "SELECT details FROM audit_logs WHERE target_kind = 'resource' AND target_id = $1 AND event = $2 ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(resource_id)
+    .bind(event)
+    .fetch_one(pool)
+    .await
+    .expect("resource audit event")
+}
+
 async fn entity(pool: &PgPool, kind: &str) -> Uuid {
     let id = Uuid::new_v4();
     sqlx::query("INSERT INTO entities (id, kind, name, status) VALUES ($1, $2, $3, 'active')")
@@ -874,6 +904,74 @@ async fn audit_and_admin_queries_smoke() {
     assert!(data["entityAuditLogs"]["items"].is_array());
     assert!(data["orphanPolicies"].is_array());
     assert!(data["expiringCredentials"].is_array());
+}
+
+#[tokio::test]
+#[ignore]
+async fn entity_and_resource_lifecycle_mutations_write_audit_events() {
+    let pool = common::pool().await;
+    let device_id = entity(&pool, "device").await;
+    let channel_id = channel(&pool).await;
+    let schema = build_schema(state(pool.clone()));
+
+    let response = schema
+        .execute(authed(format!(
+            r#"
+            mutation {{
+              updateEntity(id: "{device_id}", input: {{ name: "audited-device-{device_id}" }}) {{
+                id
+                name
+              }}
+              enableEntity(id: "{device_id}") {{
+                id
+                status
+              }}
+              disableEntity(id: "{device_id}") {{
+                id
+                status
+              }}
+              deleteEntity(id: "{device_id}")
+              restoreEntity(id: "{device_id}")
+              updateResource(id: "{channel_id}", input: {{ name: "audited-channel-{channel_id}" }}) {{
+                id
+                name
+              }}
+              deleteResource(id: "{channel_id}")
+              restoreResource(id: "{channel_id}")
+            }}
+            "#
+        )))
+        .await;
+
+    assert!(response.errors.is_empty(), "{:?}", response.errors);
+
+    let entity_details = latest_entity_audit_details(&pool, device_id, "entity.update").await;
+    assert_eq!(
+        entity_details["updated_fields"],
+        serde_json::json!(["name"])
+    );
+
+    for event in [
+        "entity.enable",
+        "entity.disable",
+        "entity.delete",
+        "entity.restore",
+    ] {
+        let details = latest_entity_audit_details(&pool, device_id, event).await;
+        assert_eq!(details, serde_json::json!({}), "{event}");
+    }
+
+    let resource_details =
+        latest_resource_audit_details(&pool, channel_id, "resource.update").await;
+    assert_eq!(
+        resource_details["updated_fields"],
+        serde_json::json!(["name"])
+    );
+
+    for event in ["resource.delete", "resource.restore"] {
+        let details = latest_resource_audit_details(&pool, channel_id, event).await;
+        assert_eq!(details, serde_json::json!({}), "{event}");
+    }
 }
 
 /// Through an actual GraphQL resolver, an exact-object read deny must override a

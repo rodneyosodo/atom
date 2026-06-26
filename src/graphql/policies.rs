@@ -442,13 +442,20 @@ impl PolicyMutation {
         authz_repo::restore_role(&state.pool, id, Some(auth.entity_id))
             .await
             .map_err(gql_error)?;
+        let role = authz_repo::get_role(&state.pool, id)
+            .await
+            .map_err(gql_error)?;
         audit::write(
             &state.pool,
-            Some(auth.entity_id),
-            None,
-            "role.restore",
-            AuditOutcome::Allow,
-            serde_json::json!({ "role_id": id }),
+            audit::AuditEvent {
+                actor_entity_id: Some(auth.entity_id),
+                tenant_id: role.tenant_id,
+                target_kind: Some("role"),
+                target_id: Some(id),
+                event: "role.restore",
+                outcome: AuditOutcome::Allow,
+                details: serde_json::json!({}),
+            },
         )
         .await;
         Ok(true)
@@ -464,16 +471,20 @@ impl PolicyMutation {
             .await
             .map_err(gql_error)?;
         let id = parse_id(id, "id")?;
-        authz_repo::purge_role(&state.pool, id)
+        let tenant_id = authz_repo::purge_role(&state.pool, id)
             .await
             .map_err(gql_error)?;
         audit::write(
             &state.pool,
-            Some(auth.entity_id),
-            None,
-            "role.purge",
-            AuditOutcome::Allow,
-            serde_json::json!({ "role_id": id }),
+            audit::AuditEvent {
+                actor_entity_id: Some(auth.entity_id),
+                tenant_id,
+                target_kind: Some("role"),
+                target_id: Some(id),
+                event: "role.purge",
+                outcome: AuditOutcome::Allow,
+                details: serde_json::json!({}),
+            },
         )
         .await;
         Ok(true)
@@ -847,22 +858,26 @@ async fn audit_action_assignment_rule(
     rule: &crate::models::action_assignment_rule::ActionAssignmentRule,
     action: &str,
 ) {
+    let event = format!("action_assignment_rule.{action}");
     audit::write(
         pool,
-        Some(actor_id),
-        rule.tenant_id,
-        &format!("action_assignment_rule.{action}"),
-        AuditOutcome::Allow,
-        serde_json::json!({
-            "rule_id": rule.id,
-            "entity_kind": &rule.entity_kind,
-            "action_name": rule.action_name,
-            "object_kind": rule.object_kind.as_str(),
-            "object_type": &rule.object_type,
-            "decision": &rule.decision,
-            "is_absolute": rule.is_absolute,
-            "transport": "graphql",
-        }),
+        audit::AuditEvent {
+            actor_entity_id: Some(actor_id),
+            tenant_id: rule.tenant_id,
+            target_kind: Some("action_assignment_rule"),
+            target_id: Some(rule.id),
+            event: &event,
+            outcome: AuditOutcome::Allow,
+            details: serde_json::json!({
+                "entity_kind": &rule.entity_kind,
+                "action_name": rule.action_name,
+                "object_kind": rule.object_kind.as_str(),
+                "object_type": &rule.object_type,
+                "decision": &rule.decision,
+                "is_absolute": rule.is_absolute,
+                "transport": "graphql",
+            }),
+        },
     )
     .await;
 }

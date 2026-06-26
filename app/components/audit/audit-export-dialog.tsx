@@ -40,8 +40,10 @@ export const EXPORT_COLUMNS = [
   { key: "createdAt", label: "Created At" },
   { key: "event", label: "Event" },
   { key: "outcome", label: "Outcome" },
-  { key: "entityId", label: "Entity ID" },
+  { key: "actorEntityId", label: "Actor Entity ID" },
   { key: "tenantId", label: "Tenant ID" },
+  { key: "targetKind", label: "Target Kind" },
+  { key: "targetId", label: "Target ID" },
   { key: "details", label: "Details (JSON)" },
 ] as const;
 
@@ -71,8 +73,10 @@ const EXPORT_QUERY = `
         id
         event
         outcome
-        entityId
+        actorEntityId
         tenantId
+        targetKind
+        targetId
         details
         createdAt
       }
@@ -84,8 +88,10 @@ type AuditLogItem = {
   id: string;
   event: string;
   outcome: string;
-  entityId: string | null;
+  actorEntityId: string | null;
   tenantId: string | null;
+  targetKind: string | null;
+  targetId: string | null;
   details: Record<string, unknown>;
   createdAt: string;
 };

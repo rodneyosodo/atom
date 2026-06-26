@@ -3624,7 +3624,7 @@
                 "method": "GET",
                 "header": [],
                 "url": {
-                  "raw": "{{base_url}}/audit?tenant_id={{tenant_id}}&entity_id={{entity_id}}&event=authz.check&limit=50&offset=0",
+                  "raw": "{{base_url}}/audit?tenant_id={{tenant_id}}&target_kind=resource&target_id={{resource_id}}&event=authz.check&limit=50&offset=0",
                   "host": [
                     "{{base_url}}"
                   ],
@@ -3637,8 +3637,12 @@
                       "value": "{{tenant_id}}"
                     },
                     {
-                      "key": "entity_id",
-                      "value": "{{entity_id}}"
+                      "key": "target_kind",
+                      "value": "resource"
+                    },
+                    {
+                      "key": "target_id",
+                      "value": "{{resource_id}}"
                     },
                     {
                       "key": "event",

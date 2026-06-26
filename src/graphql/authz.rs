@@ -148,6 +148,13 @@ fn authz_request(input: AuthzCheckInput) -> Result<AuthzRequest> {
     })
 }
 
+fn authz_request_target(req: &AuthzRequest) -> (Option<&str>, Option<Uuid>) {
+    match (req.object_kind.as_deref(), req.object_id) {
+        (Some(kind), Some(id)) => (Some(kind), Some(id)),
+        _ => (req.resource_id.map(|_| "resource"), req.resource_id),
+    }
+}
+
 async fn audit_authz_check(
     pool: &sqlx::PgPool,
     actor_id: Uuid,
@@ -175,17 +182,22 @@ async fn audit_authz_check(
         }
     }
 
+    let (target_kind, target_id) = authz_request_target(req);
     audit::write(
         pool,
-        Some(actor_id),
-        tenant_id,
-        "authz.check",
-        if response.allowed {
-            AuditOutcome::Allow
-        } else {
-            AuditOutcome::Deny
+        audit::AuditEvent {
+            actor_entity_id: Some(actor_id),
+            tenant_id,
+            target_kind,
+            target_id,
+            event: "authz.check",
+            outcome: if response.allowed {
+                AuditOutcome::Allow
+            } else {
+                AuditOutcome::Deny
+            },
+            details,
         },
-        details,
     )
     .await;
 }
@@ -213,17 +225,22 @@ async fn audit_authz_explain(
         }
     }
 
+    let (target_kind, target_id) = authz_request_target(req);
     audit::write(
         pool,
-        Some(actor_id),
-        tenant_id,
-        "authz.explain",
-        if response.allowed {
-            AuditOutcome::Allow
-        } else {
-            AuditOutcome::Deny
+        audit::AuditEvent {
+            actor_entity_id: Some(actor_id),
+            tenant_id,
+            target_kind,
+            target_id,
+            event: "authz.explain",
+            outcome: if response.allowed {
+                AuditOutcome::Allow
+            } else {
+                AuditOutcome::Deny
+            },
+            details,
         },
-        details,
     )
     .await;
 }

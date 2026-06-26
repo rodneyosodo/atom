@@ -344,14 +344,17 @@ impl TenantMutation {
             .map_err(gql_error)?;
         audit::write(
             &state.pool,
-            Some(auth.entity_id),
-            Some(tenant.id),
-            "tenant.restore",
-            AuditOutcome::Allow,
-            serde_json::json!({
-                "tenant_id": tenant.id,
-                "tenant_name": tenant.name,
-            }),
+            audit::AuditEvent {
+                actor_entity_id: Some(auth.entity_id),
+                tenant_id: Some(tenant.id),
+                target_kind: Some("tenant"),
+                target_id: Some(tenant.id),
+                event: "tenant.restore",
+                outcome: AuditOutcome::Allow,
+                details: serde_json::json!({
+                    "tenant_name": tenant.name,
+                }),
+            },
         )
         .await;
 
@@ -373,14 +376,17 @@ impl TenantMutation {
             .map_err(gql_error)?;
         audit::write(
             &state.pool,
-            Some(auth.entity_id),
-            None,
-            "tenant.purge",
-            AuditOutcome::Allow,
-            serde_json::json!({
-                "tenant_id": purged.id,
-                "tenant_name": purged.name,
-            }),
+            audit::AuditEvent {
+                actor_entity_id: Some(auth.entity_id),
+                tenant_id: None,
+                target_kind: Some("tenant"),
+                target_id: Some(purged.id),
+                event: "tenant.purge",
+                outcome: AuditOutcome::Allow,
+                details: serde_json::json!({
+                    "tenant_name": purged.name,
+                }),
+            },
         )
         .await;
 

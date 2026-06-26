@@ -437,13 +437,18 @@ impl GroupMutation {
         repo::restore_group(&state.pool, id, Some(auth.entity_id))
             .await
             .map_err(gql_error)?;
+        let group = repo::get_group(&state.pool, id).await.map_err(gql_error)?;
         audit::write(
             &state.pool,
-            Some(auth.entity_id),
-            None,
-            "group.restore",
-            AuditOutcome::Allow,
-            serde_json::json!({ "group_id": id }),
+            audit::AuditEvent {
+                actor_entity_id: Some(auth.entity_id),
+                tenant_id: group.tenant_id,
+                target_kind: Some("group"),
+                target_id: Some(id),
+                event: "group.restore",
+                outcome: AuditOutcome::Allow,
+                details: serde_json::json!({}),
+            },
         )
         .await;
         Ok(true)
@@ -456,16 +461,20 @@ impl GroupMutation {
         let state = ctx.data::<AppState>()?;
         require_any_capability(&state.pool, auth.entity_id, &[("manage", Scope::Platform)]).await?;
         let id = parse_id(id, "id")?;
-        repo::purge_group(&state.pool, id)
+        let tenant_id = repo::purge_group(&state.pool, id)
             .await
             .map_err(gql_error)?;
         audit::write(
             &state.pool,
-            Some(auth.entity_id),
-            None,
-            "group.purge",
-            AuditOutcome::Allow,
-            serde_json::json!({ "group_id": id }),
+            audit::AuditEvent {
+                actor_entity_id: Some(auth.entity_id),
+                tenant_id,
+                target_kind: Some("group"),
+                target_id: Some(id),
+                event: "group.purge",
+                outcome: AuditOutcome::Allow,
+                details: serde_json::json!({}),
+            },
         )
         .await;
         Ok(true)

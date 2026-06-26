@@ -151,6 +151,17 @@ impl ResourceQuery {
 #[derive(Default)]
 pub struct ResourceMutation;
 
+fn resource_update_fields(input: &UpdateResourceInput) -> Vec<&'static str> {
+    [
+        input.name.is_some().then_some("name"),
+        (!matches!(input.alias, async_graphql::MaybeUndefined::Undefined)).then_some("alias"),
+        input.attributes.is_some().then_some("attributes"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
 #[Object]
 impl ResourceMutation {
     async fn create_resource(
@@ -201,6 +212,7 @@ impl ResourceMutation {
         let existing = authz_repo::get_resource(&state.pool, id)
             .await
             .map_err(gql_error)?;
+        let updated_fields = resource_update_fields(&input);
         require_any_capability(
             &state.pool,
             auth.entity_id,
@@ -222,6 +234,22 @@ impl ResourceMutation {
         )
         .await
         .map_err(gql_error)?;
+
+        audit::write(
+            &state.pool,
+            audit::AuditEvent {
+                actor_entity_id: Some(auth.entity_id),
+                tenant_id: resource.tenant_id,
+                target_kind: Some("resource"),
+                target_id: Some(id),
+                event: "resource.update",
+                outcome: AuditOutcome::Allow,
+                details: serde_json::json!({
+                    "updated_fields": updated_fields,
+                }),
+            },
+        )
+        .await;
 
         Ok(resource.into())
     }
@@ -247,6 +275,20 @@ impl ResourceMutation {
             .await
             .map_err(gql_error)?;
 
+        audit::write(
+            &state.pool,
+            audit::AuditEvent {
+                actor_entity_id: Some(auth.entity_id),
+                tenant_id: existing.tenant_id,
+                target_kind: Some("resource"),
+                target_id: Some(id),
+                event: "resource.delete",
+                outcome: AuditOutcome::Allow,
+                details: serde_json::json!({}),
+            },
+        )
+        .await;
+
         Ok(true)
     }
 
@@ -260,13 +302,20 @@ impl ResourceMutation {
         authz_repo::restore_resource(&state.pool, id, Some(auth.entity_id))
             .await
             .map_err(gql_error)?;
+        let resource = authz_repo::get_resource(&state.pool, id)
+            .await
+            .map_err(gql_error)?;
         audit::write(
             &state.pool,
-            Some(auth.entity_id),
-            None,
-            "resource.restore",
-            AuditOutcome::Allow,
-            serde_json::json!({ "resource_id": id }),
+            audit::AuditEvent {
+                actor_entity_id: Some(auth.entity_id),
+                tenant_id: resource.tenant_id,
+                target_kind: Some("resource"),
+                target_id: Some(id),
+                event: "resource.restore",
+                outcome: AuditOutcome::Allow,
+                details: serde_json::json!({}),
+            },
         )
         .await;
         Ok(true)
@@ -279,16 +328,20 @@ impl ResourceMutation {
         let state = ctx.data::<AppState>()?;
         require_any_capability(&state.pool, auth.entity_id, &[("manage", Scope::Platform)]).await?;
         let id = parse_id(id, "id")?;
-        authz_repo::purge_resource(&state.pool, id)
+        let tenant_id = authz_repo::purge_resource(&state.pool, id)
             .await
             .map_err(gql_error)?;
         audit::write(
             &state.pool,
-            Some(auth.entity_id),
-            None,
-            "resource.purge",
-            AuditOutcome::Allow,
-            serde_json::json!({ "resource_id": id }),
+            audit::AuditEvent {
+                actor_entity_id: Some(auth.entity_id),
+                tenant_id,
+                target_kind: Some("resource"),
+                target_id: Some(id),
+                event: "resource.purge",
+                outcome: AuditOutcome::Allow,
+                details: serde_json::json!({}),
+            },
         )
         .await;
         Ok(true)

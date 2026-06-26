@@ -9,7 +9,7 @@ use crate::{
     models::{
         access::AuthorizedObjectIdsQuery,
         entity as entity_model,
-        enums::{AuditOutcome, DeletedFilter},
+        enums::{AuditOutcome, DeletedFilter, EntityStatus},
     },
     state::AppState,
 };
@@ -161,6 +161,33 @@ fn entity_object_type(kind: &crate::models::enums::EntityKind) -> String {
     .to_string()
 }
 
+fn entity_update_fields(input: &UpdateEntityInput) -> Vec<&'static str> {
+    [
+        input.name.is_some().then_some("name"),
+        input.kind.is_some().then_some("kind"),
+        (!matches!(input.alias, async_graphql::MaybeUndefined::Undefined)).then_some("alias"),
+        input.tenant_id.is_some().then_some("tenant_id"),
+        input.profile_id.is_some().then_some("profile_id"),
+        input
+            .profile_version_id
+            .is_some()
+            .then_some("profile_version_id"),
+        input.status.is_some().then_some("status"),
+        input.attributes.is_some().then_some("attributes"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+fn entity_status_event(status: &EntityStatus) -> &'static str {
+    match status {
+        EntityStatus::Active => "entity.enable",
+        EntityStatus::Inactive => "entity.disable",
+        EntityStatus::Suspended => "entity.suspend",
+    }
+}
+
 #[derive(Default)]
 pub struct EntityMutation;
 
@@ -212,6 +239,7 @@ impl EntityMutation {
         let state = ctx.data::<AppState>()?;
         let id = parse_id(id, "id")?;
         let existing = repo::get_entity(&state.pool, id).await.map_err(gql_error)?;
+        let updated_fields = entity_update_fields(&input);
         if auth.entity_id != id {
             require_any_capability(
                 &state.pool,
@@ -245,6 +273,22 @@ impl EntityMutation {
         .await
         .map_err(gql_error)?;
 
+        audit::write(
+            &state.pool,
+            audit::AuditEvent {
+                actor_entity_id: Some(auth.entity_id),
+                tenant_id: entity.tenant_id,
+                target_kind: Some("entity"),
+                target_id: Some(id),
+                event: "entity.update",
+                outcome: AuditOutcome::Allow,
+                details: serde_json::json!({
+                    "updated_fields": updated_fields,
+                }),
+            },
+        )
+        .await;
+
         Ok(entity.into())
     }
 
@@ -252,8 +296,8 @@ impl EntityMutation {
         let auth = require_auth(ctx)?;
         let state = ctx.data::<AppState>()?;
         let id = parse_id(id, "id")?;
+        let existing = repo::get_entity(&state.pool, id).await.map_err(gql_error)?;
         if auth.entity_id != id {
-            let existing = repo::get_entity(&state.pool, id).await.map_err(gql_error)?;
             require_any_capability(
                 &state.pool,
                 auth.entity_id,
@@ -267,6 +311,19 @@ impl EntityMutation {
         repo::delete_entity(&state.pool, id, Some(auth.entity_id))
             .await
             .map_err(gql_error)?;
+        audit::write(
+            &state.pool,
+            audit::AuditEvent {
+                actor_entity_id: Some(auth.entity_id),
+                tenant_id: existing.tenant_id,
+                target_kind: Some("entity"),
+                target_id: Some(id),
+                event: "entity.delete",
+                outcome: AuditOutcome::Allow,
+                details: serde_json::json!({}),
+            },
+        )
+        .await;
         Ok(true)
     }
 
@@ -283,13 +340,18 @@ impl EntityMutation {
         repo::restore_entity(&state.pool, id, Some(auth.entity_id))
             .await
             .map_err(gql_error)?;
+        let entity = repo::get_entity(&state.pool, id).await.map_err(gql_error)?;
         audit::write(
             &state.pool,
-            Some(auth.entity_id),
-            None,
-            "entity.restore",
-            AuditOutcome::Allow,
-            serde_json::json!({ "entity_id": id }),
+            audit::AuditEvent {
+                actor_entity_id: Some(auth.entity_id),
+                tenant_id: entity.tenant_id,
+                target_kind: Some("entity"),
+                target_id: Some(id),
+                event: "entity.restore",
+                outcome: AuditOutcome::Allow,
+                details: serde_json::json!({}),
+            },
         )
         .await;
         Ok(true)
@@ -302,16 +364,20 @@ impl EntityMutation {
         let state = ctx.data::<AppState>()?;
         require_any_capability(&state.pool, auth.entity_id, &[("manage", Scope::Platform)]).await?;
         let id = parse_id(id, "id")?;
-        repo::purge_entity(&state.pool, id)
+        let tenant_id = repo::purge_entity(&state.pool, id)
             .await
             .map_err(gql_error)?;
         audit::write(
             &state.pool,
-            Some(auth.entity_id),
-            None,
-            "entity.purge",
-            AuditOutcome::Allow,
-            serde_json::json!({ "entity_id": id }),
+            audit::AuditEvent {
+                actor_entity_id: Some(auth.entity_id),
+                tenant_id,
+                target_kind: Some("entity"),
+                target_id: Some(id),
+                event: "entity.purge",
+                outcome: AuditOutcome::Allow,
+                details: serde_json::json!({}),
+            },
         )
         .await;
         Ok(true)
@@ -396,11 +462,11 @@ impl EntityMutation {
     }
 
     async fn enable_entity(&self, ctx: &Context<'_>, id: ID) -> Result<Entity> {
-        change_entity_status(ctx, id, crate::models::enums::EntityStatus::Active).await
+        change_entity_status(ctx, id, EntityStatus::Active).await
     }
 
     async fn disable_entity(&self, ctx: &Context<'_>, id: ID) -> Result<Entity> {
-        change_entity_status(ctx, id, crate::models::enums::EntityStatus::Inactive).await
+        change_entity_status(ctx, id, EntityStatus::Inactive).await
     }
 
     async fn add_ownership(
@@ -444,14 +510,12 @@ impl EntityMutation {
     }
 }
 
-async fn change_entity_status(
-    ctx: &Context<'_>,
-    id: ID,
-    status: crate::models::enums::EntityStatus,
-) -> Result<Entity> {
+async fn change_entity_status(ctx: &Context<'_>, id: ID, status: EntityStatus) -> Result<Entity> {
     let auth = require_auth(ctx)?;
     let state = ctx.data::<AppState>()?;
     let entity_id = parse_id(id, "id")?;
+    let event = entity_status_event(&status);
+    let status_detail = status.clone();
     let existing = repo::get_entity(&state.pool, entity_id)
         .await
         .map_err(gql_error)?;
@@ -480,6 +544,21 @@ async fn change_entity_status(
     )
     .await
     .map_err(gql_error)?;
+    audit::write(
+        &state.pool,
+        audit::AuditEvent {
+            actor_entity_id: Some(auth.entity_id),
+            tenant_id: entity.tenant_id,
+            target_kind: Some("entity"),
+            target_id: Some(entity_id),
+            event,
+            outcome: AuditOutcome::Allow,
+            details: serde_json::json!({
+                "status": status_detail,
+            }),
+        },
+    )
+    .await;
     Ok(entity.into())
 }
 

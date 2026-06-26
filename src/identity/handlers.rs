@@ -250,11 +250,15 @@ pub async fn logout(
     }
     audit::write(
         &state.pool,
-        Some(auth.entity_id),
-        auth.tenant_id,
-        "auth.logout",
-        AuditOutcome::Allow,
-        serde_json::json!({}),
+        audit::AuditEvent {
+            actor_entity_id: Some(auth.entity_id),
+            tenant_id: auth.tenant_id,
+            target_kind: Some("entity"),
+            target_id: Some(auth.entity_id),
+            event: "auth.logout",
+            outcome: AuditOutcome::Allow,
+            details: serde_json::json!({}),
+        },
     )
     .await;
     let mut response = Json(serde_json::json!({"authenticated": false})).into_response();
@@ -504,11 +508,15 @@ pub async fn create_password(
     service::create_password(&state.pool, entity_id, password).await?;
     audit::write(
         &state.pool,
-        Some(entity_id),
-        tenant_id,
-        "credential.create",
-        AuditOutcome::Allow,
-        serde_json::json!({"kind": "password"}),
+        audit::AuditEvent {
+            actor_entity_id: Some(auth.entity_id),
+            tenant_id,
+            target_kind: Some("entity"),
+            target_id: Some(entity_id),
+            event: "credential.create",
+            outcome: AuditOutcome::Allow,
+            details: serde_json::json!({"kind": "password"}),
+        },
     )
     .await;
     Ok(StatusCode::NO_CONTENT)
@@ -524,11 +532,18 @@ pub async fn create_api_key(
     let resp = service::create_api_key(&state.pool, entity_id, req).await?;
     audit::write(
         &state.pool,
-        Some(entity_id),
-        tenant_id,
-        "credential.create",
-        AuditOutcome::Allow,
-        serde_json::json!({"kind": "api_key", "credential_id": resp.credential_id}),
+        audit::AuditEvent {
+            actor_entity_id: Some(auth.entity_id),
+            tenant_id,
+            target_kind: Some("entity"),
+            target_id: Some(entity_id),
+            event: "credential.create",
+            outcome: AuditOutcome::Allow,
+            details: serde_json::json!({
+                "kind": "api_key",
+                "credential_id": resp.credential_id
+            }),
+        },
     )
     .await;
     Ok((StatusCode::CREATED, Json(resp)))
@@ -564,11 +579,15 @@ pub async fn revoke_credential(
     service::revoke_credential(&state.pool, entity_id, cred_id).await?;
     audit::write(
         &state.pool,
-        Some(auth.entity_id),
-        tenant_id,
-        "credential.revoke",
-        AuditOutcome::Allow,
-        serde_json::json!({"entity_id": entity_id, "credential_id": cred_id}),
+        audit::AuditEvent {
+            actor_entity_id: Some(auth.entity_id),
+            tenant_id,
+            target_kind: Some("entity"),
+            target_id: Some(entity_id),
+            event: "credential.revoke",
+            outcome: AuditOutcome::Allow,
+            details: serde_json::json!({"credential_id": cred_id}),
+        },
     )
     .await;
     Ok(StatusCode::NO_CONTENT)

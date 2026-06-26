@@ -387,26 +387,23 @@ pub(crate) async fn purge_authz_references_for_ids(
 /// it by `object_id`, which has no foreign key, so they are removed explicitly
 /// (deleting a block cascades to its actions, role links, and direct policies).
 /// Resources are never a subject, so there is no subject-side cleanup.
-pub async fn purge_resource(pool: &PgPool, id: Uuid) -> Result<(), AppError> {
+pub async fn purge_resource(pool: &PgPool, id: Uuid) -> Result<Option<Uuid>, AppError> {
     let mut tx = pool.begin().await.map_err(db_err)?;
 
-    let deleted: Option<Uuid> = sqlx::query_scalar(
-        "DELETE FROM resources WHERE id = $1 AND deleted_at IS NOT NULL RETURNING id",
+    let purged_tenant_id: Option<Option<Uuid>> = sqlx::query_scalar(
+        "DELETE FROM resources WHERE id = $1 AND deleted_at IS NOT NULL RETURNING tenant_id",
     )
     .bind(id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(db_err)?;
-    if deleted.is_none() {
-        return Err(AppError::not_found(format!(
-            "no soft-deleted resource {id} to purge"
-        )));
-    }
+    let tenant_id = purged_tenant_id
+        .ok_or_else(|| AppError::not_found(format!("no soft-deleted resource {id} to purge")))?;
 
     purge_authz_references_for_ids(&mut tx, &[id]).await?;
 
     tx.commit().await.map_err(db_err)?;
-    Ok(())
+    Ok(tenant_id)
 }
 
 /// The UUIDs an alias path resolves to.
@@ -2539,7 +2536,7 @@ pub async fn restore_role(
 /// object-scoped blocks granting access *on* the role (`object_id = role`, which
 /// has no FK) are removed via [`purge_authz_references_for_ids`].
 /// Irreversible; a soft delete is required first.
-pub async fn purge_role(pool: &PgPool, id: Uuid) -> Result<(), AppError> {
+pub async fn purge_role(pool: &PgPool, id: Uuid) -> Result<Option<Uuid>, AppError> {
     let mut tx = pool.begin().await.map_err(db_err)?;
 
     let candidate_block_ids: Vec<Uuid> = sqlx::query_scalar(
@@ -2550,18 +2547,15 @@ pub async fn purge_role(pool: &PgPool, id: Uuid) -> Result<(), AppError> {
     .await
     .map_err(db_err)?;
 
-    let deleted: Option<Uuid> = sqlx::query_scalar(
-        "DELETE FROM roles WHERE id = $1 AND deleted_at IS NOT NULL RETURNING id",
+    let purged_tenant_id: Option<Option<Uuid>> = sqlx::query_scalar(
+        "DELETE FROM roles WHERE id = $1 AND deleted_at IS NOT NULL RETURNING tenant_id",
     )
     .bind(id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(db_err)?;
-    if deleted.is_none() {
-        return Err(AppError::not_found(format!(
-            "no soft-deleted role {id} to purge"
-        )));
-    }
+    let tenant_id = purged_tenant_id
+        .ok_or_else(|| AppError::not_found(format!("no soft-deleted role {id} to purge")))?;
 
     if !candidate_block_ids.is_empty() {
         sqlx::query(
@@ -2583,7 +2577,7 @@ pub async fn purge_role(pool: &PgPool, id: Uuid) -> Result<(), AppError> {
     purge_authz_references_for_ids(&mut tx, &[id]).await?;
 
     tx.commit().await.map_err(db_err)?;
-    Ok(())
+    Ok(tenant_id)
 }
 
 pub async fn add_role_capability(
@@ -4524,25 +4518,29 @@ pub async fn audit_logs(
     let limit = params.limit.clamp(1, 200);
     let offset = params.offset.max(0);
     let items = sqlx::query_as::<_, AuditLogItem>(
-        r#"SELECT id, entity_id, tenant_id, event, outcome, details, created_at
+        r#"SELECT id, actor_entity_id, tenant_id, target_kind, target_id, event, outcome, details, created_at
            FROM audit_logs
-           WHERE ($1::uuid IS NULL OR entity_id = $1)
+           WHERE ($1::uuid IS NULL OR actor_entity_id = $1)
              AND ($2::text IS NULL OR event = $2)
              AND ($3::text IS NULL OR outcome = $3)
              AND ($4::timestamptz IS NULL OR created_at >= $4)
              AND ($5::timestamptz IS NULL OR created_at < $5)
              AND ($6::uuid IS NULL OR tenant_id = $6)
              AND ($7::uuid[] IS NULL OR tenant_id = ANY($7))
+             AND ($8::text IS NULL OR target_kind = $8)
+             AND ($9::uuid IS NULL OR target_id = $9)
            ORDER BY created_at DESC
-           LIMIT $8 OFFSET $9"#,
+           LIMIT $10 OFFSET $11"#,
     )
-    .bind(params.entity_id)
+    .bind(params.actor_entity_id)
     .bind(params.event.clone())
     .bind(params.outcome.clone())
     .bind(params.from)
     .bind(params.to)
     .bind(params.tenant_id)
     .bind(allowed_tenant_ids.as_deref())
+    .bind(params.target_kind.clone())
+    .bind(params.target_id)
     .bind(limit)
     .bind(offset)
     .fetch_all(pool)
@@ -4551,21 +4549,25 @@ pub async fn audit_logs(
     let total: i64 = sqlx::query_scalar(
         r#"SELECT COUNT(*)
            FROM audit_logs
-           WHERE ($1::uuid IS NULL OR entity_id = $1)
+           WHERE ($1::uuid IS NULL OR actor_entity_id = $1)
              AND ($2::text IS NULL OR event = $2)
              AND ($3::text IS NULL OR outcome = $3)
              AND ($4::timestamptz IS NULL OR created_at >= $4)
              AND ($5::timestamptz IS NULL OR created_at < $5)
              AND ($6::uuid IS NULL OR tenant_id = $6)
-             AND ($7::uuid[] IS NULL OR tenant_id = ANY($7))"#,
+             AND ($7::uuid[] IS NULL OR tenant_id = ANY($7))
+             AND ($8::text IS NULL OR target_kind = $8)
+             AND ($9::uuid IS NULL OR target_id = $9)"#,
     )
-    .bind(params.entity_id)
+    .bind(params.actor_entity_id)
     .bind(params.event)
     .bind(params.outcome)
     .bind(params.from)
     .bind(params.to)
     .bind(params.tenant_id)
     .bind(allowed_tenant_ids.as_deref())
+    .bind(params.target_kind)
+    .bind(params.target_id)
     .fetch_one(pool)
     .await
     .map_err(db_err)?;

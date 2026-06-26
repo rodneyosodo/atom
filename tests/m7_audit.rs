@@ -70,16 +70,20 @@ async fn audit_write_persists_tenant_id() {
 
     audit::write(
         &p,
-        Some(e),
-        Some(t),
-        "m7.test",
-        AuditOutcome::Allow,
-        json!({"ok": true}),
+        audit::AuditEvent {
+            actor_entity_id: Some(e),
+            tenant_id: Some(t),
+            target_kind: Some("entity"),
+            target_id: Some(e),
+            event: "m7.test",
+            outcome: AuditOutcome::Allow,
+            details: json!({"ok": true}),
+        },
     )
     .await;
 
     let stored: Uuid = sqlx::query_scalar(
-        "SELECT tenant_id FROM audit_logs WHERE entity_id = $1 AND event = 'm7.test' ORDER BY created_at DESC LIMIT 1",
+        "SELECT tenant_id FROM audit_logs WHERE target_kind = 'entity' AND target_id = $1 AND event = 'm7.test' ORDER BY created_at DESC LIMIT 1",
     )
     .bind(e)
     .fetch_one(&p)
@@ -115,20 +119,28 @@ async fn tenant_audit_filter_returns_only_allowed_tenant_rows() {
 
     audit::write(
         &p,
-        Some(auditor),
-        Some(t1),
-        "m7.visible",
-        AuditOutcome::Allow,
-        json!({}),
+        audit::AuditEvent {
+            actor_entity_id: Some(auditor),
+            tenant_id: Some(t1),
+            target_kind: Some("entity"),
+            target_id: Some(auditor),
+            event: "m7.visible",
+            outcome: AuditOutcome::Allow,
+            details: json!({}),
+        },
     )
     .await;
     audit::write(
         &p,
-        Some(auditor),
-        Some(t2),
-        "m7.hidden",
-        AuditOutcome::Allow,
-        json!({}),
+        audit::AuditEvent {
+            actor_entity_id: Some(auditor),
+            tenant_id: Some(t2),
+            target_kind: Some("entity"),
+            target_id: Some(auditor),
+            event: "m7.hidden",
+            outcome: AuditOutcome::Allow,
+            details: json!({}),
+        },
     )
     .await;
 
@@ -139,8 +151,10 @@ async fn tenant_audit_filter_returns_only_allowed_tenant_rows() {
     let logs = atom::authz::repo::audit_logs(
         &p,
         AuditQuery {
-            entity_id: Some(auditor),
+            actor_entity_id: Some(auditor),
             tenant_id: None,
+            target_kind: None,
+            target_id: None,
             event: None,
             outcome: None,
             from: Some(Utc::now() - chrono::Duration::minutes(5)),
@@ -160,7 +174,7 @@ async fn tenant_audit_filter_returns_only_allowed_tenant_rows() {
 
 #[tokio::test]
 #[ignore]
-async fn successful_login_emits_auth_login_allow_with_entity_id() {
+async fn successful_login_emits_auth_login_allow_with_actor_and_target() {
     let p = pool().await;
     let cfg = Config::for_tests();
     keys::bootstrap_if_needed(&p, &cfg.signing_keys)
@@ -191,13 +205,16 @@ async fn successful_login_emits_auth_login_allow_with_entity_id() {
     assert_eq!(resp.entity_id, entity_id);
 
     let details: serde_json::Value = sqlx::query_scalar(
-        "SELECT details FROM audit_logs WHERE entity_id = $1 AND event = 'auth.login' AND outcome = 'allow' ORDER BY created_at DESC LIMIT 1",
+        "SELECT details FROM audit_logs WHERE actor_entity_id = $1 AND target_kind = 'entity' AND target_id = $1 AND event = 'auth.login' AND outcome = 'allow' ORDER BY created_at DESC LIMIT 1",
     )
     .bind(entity_id)
     .fetch_one(&p)
     .await
     .expect("login audit");
-    assert_eq!(details["entity_id"], json!(entity_id));
+    assert_eq!(
+        details["identifier"],
+        json!(format!("m7-human-{entity_id}"))
+    );
 }
 
 /// Create a role carrying one tenant-scoped block (the given effect) for `read`,

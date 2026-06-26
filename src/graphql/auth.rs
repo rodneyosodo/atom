@@ -97,11 +97,15 @@ impl AuthMutation {
         }
         audit::write(
             &state.pool,
-            Some(auth.entity_id),
-            auth.tenant_id,
-            "auth.logout",
-            AuditOutcome::Allow,
-            serde_json::json!({}),
+            audit::AuditEvent {
+                actor_entity_id: Some(auth.entity_id),
+                tenant_id: auth.tenant_id,
+                target_kind: Some("entity"),
+                target_id: Some(auth.entity_id),
+                event: "auth.logout",
+                outcome: AuditOutcome::Allow,
+                details: serde_json::json!({}),
+            },
         )
         .await;
 

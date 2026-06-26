@@ -155,11 +155,15 @@ impl OperationsMutation {
         *state.keys.write().await = new_keys;
         audit::write(
             &state.pool,
-            Some(auth.entity_id),
-            None,
-            "signing_key.rotate",
-            AuditOutcome::Allow,
-            serde_json::json!({"transport": "graphql"}),
+            audit::AuditEvent {
+                actor_entity_id: Some(auth.entity_id),
+                tenant_id: None,
+                target_kind: Some("signing_key"),
+                target_id: None,
+                event: "signing_key.rotate",
+                outcome: AuditOutcome::Allow,
+                details: serde_json::json!({"transport": "graphql"}),
+            },
         )
         .await;
         Ok(true)

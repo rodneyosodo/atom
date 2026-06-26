@@ -15,9 +15,9 @@ import {
 } from "@/components/ui/table";
 import { graphqlClient } from "@/lib/graphql/client";
 
-const ENTITY_AUDIT_QUERY = `
-  query EntityAuditLogs($entityId: ID!, $limit: Int, $offset: Int) {
-    auditLogs(entityId: $entityId, limit: $limit, offset: $offset) {
+const OBJECT_AUDIT_QUERY = `
+  query ObjectAuditLogs($targetKind: String!, $targetId: ID!, $limit: Int, $offset: Int) {
+    auditLogs(targetKind: $targetKind, targetId: $targetId, limit: $limit, offset: $offset) {
       total
       items {
         id
@@ -43,15 +43,33 @@ type AuditResponse = {
 const PAGE_SIZE = 10;
 
 export function EntityAuditLog({ entityId }: { entityId: string }) {
+  return (
+    <ObjectAuditLog
+      emptyLabel="No audit logs for this entity."
+      targetId={entityId}
+      targetKind="entity"
+    />
+  );
+}
+
+export function ObjectAuditLog({
+  targetId,
+  targetKind,
+  emptyLabel = "No audit logs for this item.",
+}: {
+  targetId: string;
+  targetKind: string;
+  emptyLabel?: string;
+}) {
   const [page, setPage] = React.useState(1);
   const offset = (page - 1) * PAGE_SIZE;
 
   const { data, isFetching, error } = useQuery({
-    queryKey: ["entity-audit", entityId, page],
+    queryKey: ["object-audit", targetKind, targetId, page],
     queryFn: ({ signal }) =>
       graphqlClient<AuditResponse>({
-        query: ENTITY_AUDIT_QUERY,
-        variables: { entityId, limit: PAGE_SIZE, offset },
+        query: OBJECT_AUDIT_QUERY,
+        variables: { targetKind, targetId, limit: PAGE_SIZE, offset },
         signal,
       }),
     staleTime: 15_000,
@@ -73,7 +91,7 @@ export function EntityAuditLog({ entityId }: { entityId: string }) {
   if (!isFetching && items.length === 0) {
     return (
       <div className="rounded-lg border bg-muted/30 p-4 text-center text-sm text-muted-foreground">
-        No audit logs for this entity.
+        {emptyLabel}
       </div>
     );
   }
