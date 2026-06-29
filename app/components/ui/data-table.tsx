@@ -285,7 +285,7 @@ export function DataTable<TData, TValue>({
     <div className="grid gap-4">
       {/* Toolbar row */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
           <div className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -541,28 +541,29 @@ function LifecycleStatusFilter({
   options: string[];
   value: string;
 }) {
+  const labelId = React.useId();
+
   return (
-    <Select onValueChange={onChange} value={value}>
-      <SelectTrigger
-        aria-label={`Filter by ${label.toLowerCase()}`}
-        className="h-9 w-full sm:w-44"
-      >
-        <SelectValue placeholder={label} />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectGroup>
-          <SelectItem value="all">{hasLifecycle ? "Live" : "All"}</SelectItem>
-          {options.map((option) => (
-            <SelectItem key={option} value={option}>
-              {capitalize(option)}
-            </SelectItem>
-          ))}
-          {hasLifecycle ? (
-            <SelectItem value="deleted">Deleted</SelectItem>
-          ) : null}
-        </SelectGroup>
-      </SelectContent>
-    </Select>
+    <FilterField label={label} labelId={labelId}>
+      <Select onValueChange={onChange} value={value}>
+        <SelectTrigger aria-labelledby={labelId} className="h-9 w-full sm:w-44">
+          <SelectValue placeholder={label} />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectGroup>
+            <SelectItem value="all">{hasLifecycle ? "Live" : "All"}</SelectItem>
+            {options.map((option) => (
+              <SelectItem key={option} value={option}>
+                {capitalize(option)}
+              </SelectItem>
+            ))}
+            {hasLifecycle ? (
+              <SelectItem value="deleted">Deleted</SelectItem>
+            ) : null}
+          </SelectGroup>
+        </SelectContent>
+      </Select>
+    </FilterField>
   );
 }
 
@@ -580,27 +581,50 @@ function SelectFilter({
   onChange: (value: string) => void;
   value: string;
 }) {
+  const labelId = React.useId();
+
   return (
-    <Select onValueChange={onChange} value={value || "all"}>
-      <SelectTrigger
-        aria-label={`Filter by ${filter.label}`}
-        className="h-9 w-full sm:w-44"
-      >
-        <SelectValue placeholder={filter.label} />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectGroup>
-          <SelectItem value="all">
-            {filter.allLabel ?? `All ${filter.label}`}
-          </SelectItem>
-          {(filter.options ?? []).map((option) => (
-            <SelectItem key={option.value} value={option.value}>
-              {option.label}
+    <FilterField label={filter.label} labelId={labelId}>
+      <Select onValueChange={onChange} value={value || "all"}>
+        <SelectTrigger aria-labelledby={labelId} className="h-9 w-full sm:w-44">
+          <SelectValue placeholder={filter.label} />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectGroup>
+            <SelectItem value="all">
+              {filter.allLabel ?? `All ${filter.label}`}
             </SelectItem>
-          ))}
-        </SelectGroup>
-      </SelectContent>
-    </Select>
+            {(filter.options ?? []).map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectGroup>
+        </SelectContent>
+      </Select>
+    </FilterField>
+  );
+}
+
+function FilterField({
+  children,
+  label,
+  labelId,
+}: {
+  children: React.ReactNode;
+  label: string;
+  labelId: string;
+}) {
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <span
+        className="px-1 text-xs font-medium leading-none text-muted-foreground"
+        id={labelId}
+      >
+        {label}
+      </span>
+      {children}
+    </div>
   );
 }
 

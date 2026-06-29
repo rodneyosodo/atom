@@ -39,11 +39,27 @@ export async function CrudWorkspace({ resourceKey, searchParams }: Props) {
   const rawTenant = cookieStore.get(TENANT_COOKIE)?.value;
   const tenantId =
     rawTenant && rawTenant !== GLOBAL_TENANT ? rawTenant : undefined;
+  const scopedTenantId =
+    tenantId && resource.tenantFilter ? tenantId : undefined;
+  const filtersForPage = scopedTenantId
+    ? resource.filters?.filter((filter) => filter.variable !== "tenantId")
+    : resource.filters;
+  const rawTenantFilter = searchParams[`${resourceKey}.tenantId`];
+  const tenantFilterValue = Array.isArray(rawTenantFilter)
+    ? rawTenantFilter[0]
+    : rawTenantFilter;
+  const selectedTenantId =
+    !scopedTenantId &&
+    resource.tenantFilter &&
+    tenantFilterValue &&
+    tenantFilterValue !== "all"
+      ? tenantFilterValue
+      : undefined;
   const filterResultPromise = resolveFilters(
-    resource.filters,
+    filtersForPage,
     resourceKey,
     searchParams,
-    tenantId && resource.tenantFilter ? tenantId : undefined,
+    scopedTenantId ?? selectedTenantId,
   );
 
   let rows: Row[] = resource.sampleRows;
@@ -53,8 +69,8 @@ export async function CrudWorkspace({ resourceKey, searchParams }: Props) {
 
   if (resource.listQuery) {
     const variables: Record<string, unknown> = { limit, offset };
-    if (tenantId && resource.tenantFilter) variables.tenantId = tenantId;
-    for (const filter of resource.filters ?? []) {
+    if (scopedTenantId) variables.tenantId = scopedTenantId;
+    for (const filter of filtersForPage ?? []) {
       const raw = searchParams[`${resourceKey}.${filter.key}`];
       const value = Array.isArray(raw) ? raw[0] : raw;
       if (value && value !== "all") {
@@ -164,29 +180,23 @@ async function resolveFilters(
       if (!filter.optionsQuery || !filter.optionsQueryName) return filter;
 
       try {
-        const data = await graphqlServer<Record<string, string[]>>({
+        const data = await graphqlServer<Record<string, unknown>>({
           query: filter.optionsQuery,
-          variables: tenantId ? { tenantId } : {},
+          variables:
+            tenantId && filter.scopeOptionsByTenant ? { tenantId } : {},
         });
         const rawSelected = searchParams[`${resourceKey}.${filter.key}`];
         const selected = Array.isArray(rawSelected)
           ? rawSelected[0]
           : rawSelected;
-        const values = new Set(
-          (data[filter.optionsQueryName] ?? [])
-            .map((value) => value.trim())
-            .filter(Boolean),
-        );
-        if (selected && selected !== "all") values.add(selected);
 
         return {
           ...filter,
-          options: Array.from(values)
-            .sort((a, b) => a.localeCompare(b))
-            .map((value) => ({
-              label: formatFilterOption(value),
-              value,
-            })),
+          options: filterOptionsFromPayload(
+            data[filter.optionsQueryName],
+            filter,
+            selected,
+          ),
         };
       } catch (err) {
         firstError ??=
@@ -207,4 +217,57 @@ function formatFilterOption(value: string) {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function filterOptionsFromPayload(
+  payload: unknown,
+  filter: CrudFilter,
+  selected: string | undefined,
+) {
+  const rawOptions = Array.isArray(payload)
+    ? payload
+    : isRecord(payload) && Array.isArray(payload.items)
+      ? payload.items
+      : [];
+  const optionsByValue = rawOptions
+    .map((option) => filterOptionFromRaw(option, filter))
+    .filter((option): option is { label: string; value: string } =>
+      Boolean(option),
+    )
+    .reduce(
+      (options, option) => options.set(option.value, option),
+      new Map<string, { label: string; value: string }>(),
+    );
+
+  if (selected && selected !== "all" && !optionsByValue.has(selected)) {
+    optionsByValue.set(selected, {
+      label: filter.optionValueKey ? selected : formatFilterOption(selected),
+      value: selected,
+    });
+  }
+
+  return Array.from(optionsByValue.values()).sort((left, right) =>
+    left.label.localeCompare(right.label),
+  );
+}
+
+function filterOptionFromRaw(option: unknown, filter: CrudFilter) {
+  if (typeof option === "string") {
+    const value = option.trim();
+    return value ? { label: formatFilterOption(value), value } : null;
+  }
+  if (!isRecord(option)) return null;
+
+  const rawValue = option[filter.optionValueKey ?? "value"];
+  const value = typeof rawValue === "string" ? rawValue.trim() : "";
+  if (!value) return null;
+
+  const rawLabel =
+    option[filter.optionLabelKey ?? "label"] ?? option.name ?? option.label;
+  const label = typeof rawLabel === "string" ? rawLabel.trim() : "";
+  return { label: label || value, value };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

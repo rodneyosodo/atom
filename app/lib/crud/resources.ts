@@ -26,6 +26,9 @@ export type CrudFilter = {
   options?: Array<{ label: string; value: string }>;
   optionsQuery?: string;
   optionsQueryName?: string;
+  optionValueKey?: string;
+  optionLabelKey?: string;
+  scopeOptionsByTenant?: boolean;
 };
 
 export type CrudResource = {
@@ -75,6 +78,18 @@ const lifecycleFilter: CrudFilter = {
   allLabel: "Live",
   type: "select",
   options: [{ label: "Deleted", value: "deleted" }],
+};
+
+const tenantSelectFilter: CrudFilter = {
+  key: "tenantId",
+  variable: "tenantId",
+  label: "Tenant",
+  allLabel: "All Tenants",
+  type: "select",
+  optionsQuery: `query CrudTenantFilterTenants { tenants(limit: 200, offset: 0) { items { id name alias } } }`,
+  optionsQueryName: "tenants",
+  optionValueKey: "id",
+  optionLabelKey: "name",
 };
 
 export const crudResources: CrudResource[] = [
@@ -144,6 +159,7 @@ export const crudResources: CrudResource[] = [
           { label: "Application", value: "application" },
         ],
       },
+      tenantSelectFilter,
     ],
     columns: [
       { key: "name", label: "Name", priority: "high" },
@@ -261,7 +277,9 @@ export const crudResources: CrudResource[] = [
         type: "select",
         optionsQuery: `query ResourceKinds($tenantId: ID) { resourceKinds(tenantId: $tenantId) }`,
         optionsQueryName: "resourceKinds",
+        scopeOptionsByTenant: true,
       },
+      tenantSelectFilter,
     ],
     columns: [
       { key: "name", label: "Name", priority: "high" },
