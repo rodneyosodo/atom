@@ -6,7 +6,7 @@ use crate::{
     auth::{has_capability_in_scope, require_capability, AuthContext, Scope},
     error::AppError,
     identity::{repo, service},
-    models::enums::AuditOutcome,
+    models::enums::{AuditOutcome, CredentialKind},
     state::AppState,
 };
 
@@ -42,23 +42,21 @@ pub struct AuthMutation;
 #[Object]
 impl AuthMutation {
     async fn login(&self, ctx: &Context<'_>, input: LoginInput) -> Result<LoginResponse> {
-        if input.kind != "password" {
-            return Err(async_graphql::Error::new(format!(
-                "unsupported credential kind: {}",
-                input.kind
-            )));
-        }
+        let credential_kind = parse_login_credential_kind(&input.kind)?;
 
         let state = ctx.data::<AppState>()?;
         let keys = state.keys.read().await;
-        let response = service::login_password_with_tenant(
+        let response = service::login_credential_with_tenant(
             &state.pool,
             &state.config,
             &keys.primary,
-            &input.identifier,
-            &input.secret,
-            parse_optional_id(input.tenant_id, "tenantId")?,
-            input.tenant_alias.as_deref(),
+            service::CredentialLoginRequest {
+                identifier: &input.identifier,
+                secret: &input.secret,
+                tenant_id: parse_optional_id(input.tenant_id, "tenantId")?,
+                tenant_alias: input.tenant_alias.as_deref(),
+                kind: credential_kind,
+            },
         )
         .await
         .map_err(gql_error)?;
@@ -135,6 +133,16 @@ impl AuthMutation {
     }
 }
 
+fn parse_login_credential_kind(value: &str) -> Result<CredentialKind> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" | "password" => Ok(CredentialKind::Password),
+        "shared_key" => Ok(CredentialKind::SharedKey),
+        other => Err(async_graphql::Error::new(format!(
+            "unsupported credential kind: {other}"
+        ))),
+    }
+}
+
 pub(crate) fn gql_error(err: AppError) -> async_graphql::Error {
     match &err {
         AppError::Database(sqlx::Error::Database(db)) => match db.code().as_deref() {
@@ -179,7 +187,7 @@ pub(crate) fn scope_for_tenant(tenant_id: Option<Uuid>) -> Scope {
 
 pub(crate) async fn require_any_capability(
     pool: &sqlx::PgPool,
-    entity_id: Uuid,
+    auth: &AuthContext,
     checks: &[(&str, Scope)],
 ) -> Result<()> {
     // Delegate to the single core gate. A previous sequential-OR copy here
@@ -187,7 +195,7 @@ pub(crate) async fn require_any_capability(
     // exact-object deny was bypassed by a later tenant-wide allow. The core gate
     // evaluates all scopes of an action together (cross-scope deny-override) and
     // enforces tenant boundaries and fail-closed conditions.
-    crate::auth::require_any_capability(pool, entity_id, checks)
+    crate::auth::require_any_capability(pool, auth, checks)
         .await
         .map_err(gql_error)
 }
@@ -197,76 +205,79 @@ pub(crate) async fn require_any_capability(
 
 pub(crate) async fn require_list_access(
     pool: &sqlx::PgPool,
-    entity_id: Uuid,
+    auth: &AuthContext,
     tenant_id: Option<Uuid>,
 ) -> Result<()> {
-    crate::auth::require_list_access(pool, entity_id, tenant_id)
+    crate::auth::require_list_access(pool, auth, tenant_id)
         .await
         .map_err(gql_error)
 }
 
 pub(crate) async fn require_read_access(
     pool: &sqlx::PgPool,
-    entity_id: Uuid,
+    auth: &AuthContext,
     tenant_id: Option<Uuid>,
     object_id: Uuid,
 ) -> Result<()> {
-    crate::auth::require_read_access(pool, entity_id, tenant_id, object_id)
+    crate::auth::require_read_access(pool, auth, tenant_id, object_id)
         .await
         .map_err(gql_error)
 }
 
 pub(crate) async fn require_role_read(
     pool: &sqlx::PgPool,
-    entity_id: Uuid,
+    auth: &AuthContext,
     tenant_id: Option<Uuid>,
 ) -> Result<()> {
-    crate::auth::require_role_read(pool, entity_id, tenant_id)
+    crate::auth::require_role_read(pool, auth, tenant_id)
         .await
         .map_err(gql_error)
 }
 
 pub(crate) async fn require_policy_read(
     pool: &sqlx::PgPool,
-    entity_id: Uuid,
+    auth: &AuthContext,
     tenant_id: Option<Uuid>,
 ) -> Result<()> {
-    crate::auth::require_policy_read(pool, entity_id, tenant_id)
+    crate::auth::require_policy_read(pool, auth, tenant_id)
         .await
         .map_err(gql_error)
 }
 
-pub(crate) async fn require_explain_access(pool: &sqlx::PgPool, entity_id: Uuid) -> Result<()> {
-    crate::auth::require_explain_access(pool, entity_id)
+pub(crate) async fn require_explain_access(pool: &sqlx::PgPool, auth: &AuthContext) -> Result<()> {
+    crate::auth::require_explain_access(pool, auth)
         .await
+        .map_err(gql_error)
+}
+
+/// GraphQL-facing wrapper over [`AuthContext::reject_scoped_credential_management`]:
+/// a scoped access token can never mint or rewrite credentials (self-escalation).
+pub(crate) fn deny_scoped_token(auth: &AuthContext) -> Result<()> {
+    auth.reject_scoped_credential_management()
         .map_err(gql_error)
 }
 
 pub(crate) async fn require_credential_management(
     state: &AppState,
-    actor_id: Uuid,
+    auth: &AuthContext,
     target_entity_id: Uuid,
 ) -> Result<Option<Uuid>> {
+    deny_scoped_token(auth)?;
     let target = repo::get_entity(&state.pool, target_entity_id)
         .await
         .map_err(gql_error)?;
-    if actor_id == target_entity_id {
+    if auth.entity_id == target_entity_id {
         return Ok(target.tenant_id);
     }
-    if has_capability_in_scope(
-        &state.pool,
-        actor_id,
-        "manage",
-        Scope::Object(target_entity_id),
-    )
-    .await
-    .map_err(gql_error)?
+    if has_capability_in_scope(&state.pool, auth, "manage", Scope::Object(target_entity_id))
+        .await
+        .map_err(gql_error)?
     {
         return Ok(target.tenant_id);
     }
     require_capability(
         &state.pool,
-        actor_id,
+        auth,
         "manage",
         scope_for_tenant(target.tenant_id),
     )

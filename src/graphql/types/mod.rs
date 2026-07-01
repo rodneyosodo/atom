@@ -113,7 +113,7 @@ pub enum GqlCreateActionAssignmentRuleDecision {
 #[graphql(name = "CredentialKind", rename_items = "snake_case")]
 pub enum GqlCredentialKind {
     Password,
-    ApiKey,
+    AccessToken,
     Certificate,
     SharedKey,
 }
@@ -721,10 +721,10 @@ impl Credential {
     }
 }
 
-pub struct ApiKeyResponse(pub token_model::ApiKeyResponse);
+pub struct SharedKeyResponse(pub token_model::SharedKeyResponse);
 
 #[Object]
-impl ApiKeyResponse {
+impl SharedKeyResponse {
     async fn credential_id(&self) -> ID {
         id(self.0.credential_id)
     }
@@ -738,16 +738,116 @@ impl ApiKeyResponse {
     }
 }
 
-pub struct SharedKeyResponse(pub token_model::SharedKeyResponse);
+pub struct AccessTokenPermission(pub token_model::AccessTokenPermissionSummary);
 
 #[Object]
-impl SharedKeyResponse {
+impl AccessTokenPermission {
+    async fn actions(&self) -> &[String] {
+        &self.0.actions
+    }
+
+    async fn scope_mode(&self) -> &str {
+        &self.0.scope_mode
+    }
+
+    async fn tenant_id(&self) -> Option<ID> {
+        self.0.tenant_id.map(id)
+    }
+
+    async fn object_kind(&self) -> Option<&str> {
+        self.0.object_kind.as_deref()
+    }
+
+    async fn object_type(&self) -> Option<&str> {
+        self.0.object_type.as_deref()
+    }
+
+    async fn object_id(&self) -> Option<ID> {
+        self.0.object_id.map(id)
+    }
+
+    async fn conditions(&self) -> &serde_json::Value {
+        &self.0.conditions
+    }
+}
+
+pub struct AccessToken(pub token_model::AccessTokenSummary);
+
+#[Object]
+impl AccessToken {
     async fn credential_id(&self) -> ID {
         id(self.0.credential_id)
     }
 
-    async fn key(&self) -> &str {
-        &self.0.key
+    async fn name(&self) -> &str {
+        &self.0.name
+    }
+
+    async fn description(&self) -> Option<&str> {
+        self.0.description.as_deref()
+    }
+
+    async fn identifier(&self) -> Option<&str> {
+        self.0.identifier.as_deref()
+    }
+
+    async fn status(&self) -> &'static str {
+        credential_status_as_str(&self.0.status)
+    }
+
+    async fn scoped(&self) -> bool {
+        self.0.scoped
+    }
+
+    async fn permissions(&self) -> Vec<AccessTokenPermission> {
+        self.0
+            .permissions
+            .iter()
+            .map(|p| AccessTokenPermission(clone_permission_summary(p)))
+            .collect()
+    }
+
+    async fn expires_at(&self) -> Option<String> {
+        self.0.expires_at.map(timestamp)
+    }
+
+    async fn created_at(&self) -> String {
+        timestamp(self.0.created_at)
+    }
+}
+
+fn clone_permission_summary(
+    p: &token_model::AccessTokenPermissionSummary,
+) -> token_model::AccessTokenPermissionSummary {
+    token_model::AccessTokenPermissionSummary {
+        actions: p.actions.clone(),
+        scope_mode: p.scope_mode.clone(),
+        tenant_id: p.tenant_id,
+        object_kind: p.object_kind.clone(),
+        object_type: p.object_type.clone(),
+        object_id: p.object_id,
+        conditions: p.conditions.clone(),
+    }
+}
+
+pub struct AccessTokenResponse(pub token_model::AccessTokenResponse);
+
+#[Object]
+impl AccessTokenResponse {
+    async fn credential_id(&self) -> ID {
+        id(self.0.credential_id)
+    }
+
+    async fn token(&self) -> &str {
+        &self.0.token
+    }
+
+    async fn name(&self) -> &str {
+        &self.0.name
+    }
+
+    async fn description(&self) -> Option<&str> {
+        self.0.description.as_deref()
     }
 
     async fn expires_at(&self) -> Option<String> {
@@ -1647,9 +1747,32 @@ pub struct UpdateGroupInput {
 }
 
 #[derive(InputObject)]
-pub struct CreateApiKeyInput {
-    pub expires_at: Option<String>,
+pub struct CreateAccessTokenInput {
+    pub name: String,
     pub description: Option<String>,
+    pub expires_at: Option<String>,
+    pub permissions: Vec<AccessTokenPermissionInput>,
+    /// Mint the token for another subject (delegated). Omitted or equal to the
+    /// caller = self-service. A different subject requires an unscoped caller with
+    /// `manage` on the target; the ceiling is still capped by the *target's* live
+    /// authority at evaluation time.
+    pub subject_id: Option<ID>,
+    /// Whether the token is capped by a permission ceiling. Defaults to `true`.
+    /// `false` mints an *unscoped* token that carries the owner's full live grants
+    /// (no ceiling) and must be sent with an empty `permissions` list. Minting an
+    /// unscoped token requires credential-management authority over the owner.
+    pub scoped: Option<bool>,
+}
+
+#[derive(InputObject)]
+pub struct AccessTokenPermissionInput {
+    pub actions: Vec<String>,
+    pub scope_mode: String,
+    pub tenant_id: Option<ID>,
+    pub object_kind: Option<String>,
+    pub object_type: Option<String>,
+    pub object_id: Option<ID>,
+    pub conditions: Option<serde_json::Value>,
 }
 
 #[derive(InputObject)]
@@ -1957,6 +2080,12 @@ pub struct CredentialList {
 }
 
 #[derive(Default)]
+pub struct AccessTokenList {
+    pub items: Vec<AccessToken>,
+    pub total: i64,
+}
+
+#[derive(Default)]
 pub struct RoleList {
     pub items: Vec<Role>,
     pub total: i64,
@@ -2211,6 +2340,17 @@ impl CredentialList {
     }
 }
 
+#[Object]
+impl AccessTokenList {
+    async fn items(&self) -> &[AccessToken] {
+        &self.items
+    }
+
+    async fn total(&self) -> i64 {
+        self.total
+    }
+}
+
 impl From<profile_model::Profile> for Profile {
     fn from(profile: profile_model::Profile) -> Self {
         Profile(profile)
@@ -2297,15 +2437,21 @@ impl From<identity_service::CredentialSummary> for Credential {
     }
 }
 
-impl From<token_model::ApiKeyResponse> for ApiKeyResponse {
-    fn from(response: token_model::ApiKeyResponse) -> Self {
-        ApiKeyResponse(response)
-    }
-}
-
 impl From<token_model::SharedKeyResponse> for SharedKeyResponse {
     fn from(response: token_model::SharedKeyResponse) -> Self {
         SharedKeyResponse(response)
+    }
+}
+
+impl From<token_model::AccessTokenSummary> for AccessToken {
+    fn from(token: token_model::AccessTokenSummary) -> Self {
+        AccessToken(token)
+    }
+}
+
+impl From<token_model::AccessTokenResponse> for AccessTokenResponse {
+    fn from(response: token_model::AccessTokenResponse) -> Self {
+        AccessTokenResponse(response)
     }
 }
 
@@ -2710,7 +2856,7 @@ impl From<GqlCredentialKind> for CredentialKind {
     fn from(kind: GqlCredentialKind) -> Self {
         match kind {
             GqlCredentialKind::Password => CredentialKind::Password,
-            GqlCredentialKind::ApiKey => CredentialKind::ApiKey,
+            GqlCredentialKind::AccessToken => CredentialKind::AccessToken,
             GqlCredentialKind::Certificate => CredentialKind::Certificate,
             GqlCredentialKind::SharedKey => CredentialKind::SharedKey,
         }
@@ -2721,7 +2867,7 @@ impl From<&CredentialKind> for GqlCredentialKind {
     fn from(kind: &CredentialKind) -> Self {
         match kind {
             CredentialKind::Password => GqlCredentialKind::Password,
-            CredentialKind::ApiKey => GqlCredentialKind::ApiKey,
+            CredentialKind::AccessToken => GqlCredentialKind::AccessToken,
             CredentialKind::Certificate => GqlCredentialKind::Certificate,
             CredentialKind::SharedKey => GqlCredentialKind::SharedKey,
         }

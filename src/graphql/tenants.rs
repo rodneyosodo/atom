@@ -2,7 +2,7 @@ use async_graphql::{Context, Object, Result, SimpleObject, ID};
 
 use crate::{
     audit,
-    auth::{has_capability_in_scope, require_capability, Scope},
+    auth::{has_capability_in_scope, require_capability, AuthContext, Scope},
     authz::engine,
     error::AppError,
     models::{
@@ -64,16 +64,16 @@ impl TenantQuery {
             offset: offset.map(i64::from).unwrap_or(0),
         };
         let list = if deleted != DeletedFilter::Live {
-            require_any_capability(&state.pool, auth.entity_id, &[("manage", Scope::Platform)])
-                .await?;
+            require_any_capability(&state.pool, &auth, &[("manage", Scope::Platform)]).await?;
             tenant_repo::list_tenants(&state.pool, params)
                 .await
                 .map_err(gql_error)?
-        } else if can_list_all_tenants(&state.pool, auth.entity_id).await? {
+        } else if can_list_all_tenants(&state.pool, &auth).await? {
             tenant_repo::list_tenants(&state.pool, params)
                 .await
                 .map_err(gql_error)?
         } else {
+            auth.reject_scoped_listing().map_err(gql_error)?;
             tenant_repo::list_tenants_for_entity(&state.pool, auth.entity_id, params)
                 .await
                 .map_err(gql_error)?
@@ -89,7 +89,8 @@ impl TenantQuery {
         let auth = require_auth(ctx)?;
         let state = ctx.data::<AppState>()?;
         let id = parse_id(id, "id")?;
-        require_tenant_read_access(state, auth.entity_id, id).await?;
+        require_tenant_read_access(state, auth.entity_id, id, auth.ceiling_for(auth.entity_id))
+            .await?;
         let tenant = tenant_repo::get_tenant(&state.pool, id)
             .await
             .map_err(gql_error)?;
@@ -109,7 +110,7 @@ impl TenantQuery {
         let tenant_id = parse_id(tenant_id, "tenantId")?;
         require_any_capability(
             &state.pool,
-            auth.entity_id,
+            &auth,
             &[
                 ("manage", Scope::Tenant(tenant_id)),
                 ("role.manage", Scope::Tenant(tenant_id)),
@@ -152,7 +153,7 @@ impl TenantQuery {
         }
         require_any_capability(
             &state.pool,
-            auth.entity_id,
+            &auth,
             &[
                 ("manage", Scope::Tenant(tenant_id)),
                 ("role.manage", Scope::Tenant(tenant_id)),
@@ -188,7 +189,7 @@ impl TenantQuery {
         let tenant_id = parse_id(tenant_id, "tenantId")?;
         require_any_capability(
             &state.pool,
-            auth.entity_id,
+            &auth,
             &[
                 ("manage", Scope::Tenant(tenant_id)),
                 ("policy.manage", Scope::Tenant(tenant_id)),
@@ -220,7 +221,13 @@ impl TenantQuery {
         let auth = require_auth(ctx)?;
         let state = ctx.data::<AppState>()?;
         let tenant_id = parse_id(tenant_id, "tenantId")?;
-        require_tenant_read_access(state, auth.entity_id, tenant_id).await?;
+        require_tenant_read_access(
+            state,
+            auth.entity_id,
+            tenant_id,
+            auth.ceiling_for(auth.entity_id),
+        )
+        .await?;
         let roles =
             tenant_repo::list_tenant_role_assignments(&state.pool, tenant_id, auth.entity_id)
                 .await
@@ -274,7 +281,7 @@ impl TenantMutation {
         let result = async {
             crate::auth::require_any_capability(
                 &state.pool,
-                auth.entity_id,
+                &auth,
                 &[("manage", Scope::Platform), ("create", Scope::Platform)],
             )
             .await?;
@@ -321,7 +328,7 @@ impl TenantMutation {
         let result = async {
             crate::auth::require_any_capability(
                 &state.pool,
-                auth.entity_id,
+                &auth,
                 &[
                     ("manage", Scope::Platform),
                     ("manage", Scope::Tenant(tenant_id)),
@@ -363,8 +370,7 @@ impl TenantMutation {
         let state = ctx.data::<AppState>()?;
         let tenant_id = parse_id(id, "id")?;
         let result = async {
-            crate::auth::require_capability(&state.pool, auth.entity_id, "manage", Scope::Platform)
-                .await?;
+            crate::auth::require_capability(&state.pool, &auth, "manage", Scope::Platform).await?;
             tenant_repo::soft_delete_tenant(&state.pool, tenant_id, Some(auth.entity_id)).await
         }
         .await;
@@ -391,7 +397,7 @@ impl TenantMutation {
     async fn restore_tenant(&self, ctx: &Context<'_>, id: ID) -> Result<Tenant> {
         let auth = require_auth(ctx)?;
         let state = ctx.data::<AppState>()?;
-        require_capability(&state.pool, auth.entity_id, "manage", Scope::Platform)
+        require_capability(&state.pool, &auth, "manage", Scope::Platform)
             .await
             .map_err(gql_error)?;
 
@@ -423,7 +429,7 @@ impl TenantMutation {
     async fn purge_tenant(&self, ctx: &Context<'_>, id: ID) -> Result<bool> {
         let auth = require_auth(ctx)?;
         let state = ctx.data::<AppState>()?;
-        require_capability(&state.pool, auth.entity_id, "manage", Scope::Platform)
+        require_capability(&state.pool, &auth, "manage", Scope::Platform)
             .await
             .map_err(gql_error)?;
 
@@ -473,7 +479,7 @@ impl TenantMutation {
         let tenant_id = parse_id(tenant_id, "tenantId")?;
         require_any_capability(
             &state.pool,
-            auth.entity_id,
+            &auth,
             &[
                 ("manage", Scope::Tenant(tenant_id)),
                 ("policy.manage", Scope::Tenant(tenant_id)),
@@ -562,7 +568,7 @@ impl TenantMutation {
         let tenant_id = parse_id(tenant_id, "tenantId")?;
         require_capability(
             &state.pool,
-            auth.entity_id,
+            &auth,
             "policy.manage",
             Scope::Tenant(tenant_id),
         )
@@ -591,7 +597,7 @@ impl TenantMutation {
         let result = async {
             crate::auth::require_capability(
                 &state.pool,
-                auth.entity_id,
+                &auth,
                 "policy.manage",
                 Scope::Tenant(tenant_id),
             )
@@ -628,7 +634,7 @@ impl TenantMutation {
         let result = async {
             crate::auth::require_capability(
                 &state.pool,
-                auth.entity_id,
+                &auth,
                 "policy.manage",
                 Scope::Tenant(tenant_id),
             )
@@ -658,8 +664,7 @@ async fn change_tenant_status(ctx: &Context<'_>, id: ID, status: TenantStatus) -
     let event = tenant_status_event(&status);
     let status_detail = status.clone();
     let result = async {
-        crate::auth::require_capability(&state.pool, auth.entity_id, "manage", Scope::Platform)
-            .await?;
+        crate::auth::require_capability(&state.pool, &auth, "manage", Scope::Platform).await?;
         tenant_repo::change_tenant_status(&state.pool, tenant_id, status, Some(auth.entity_id))
             .await
     }
@@ -691,6 +696,7 @@ async fn require_tenant_read_access(
     state: &AppState,
     entity_id: uuid::Uuid,
     tenant_id: uuid::Uuid,
+    ceiling: Option<&crate::authz::repo::CredentialCeiling>,
 ) -> Result<()> {
     if engine::allows_any(
         &state.pool,
@@ -698,6 +704,7 @@ async fn require_tenant_read_access(
         "tenant",
         tenant_id,
         &["read", "manage"],
+        ceiling,
     )
     .await
     .map_err(gql_error)?
@@ -708,9 +715,9 @@ async fn require_tenant_read_access(
     }
 }
 
-async fn can_list_all_tenants(pool: &sqlx::PgPool, entity_id: uuid::Uuid) -> Result<bool> {
+async fn can_list_all_tenants(pool: &sqlx::PgPool, auth: &AuthContext) -> Result<bool> {
     for capability in ["read", "manage"] {
-        if has_capability_in_scope(pool, entity_id, capability, Scope::Platform)
+        if has_capability_in_scope(pool, auth, capability, Scope::Platform)
             .await
             .map_err(gql_error)?
         {

@@ -2,7 +2,7 @@ use async_graphql::{Context, Object, Result, ID};
 
 use crate::{
     audit,
-    auth::Scope,
+    auth::{AuthContext, Scope},
     authz::{engine, repo as authz_repo},
     error::AppError,
     identity::repo,
@@ -37,7 +37,7 @@ impl EntityQuery {
         let owner = repo::get_entity(&state.pool, owner_id)
             .await
             .map_err(gql_error)?;
-        require_read_access(&state.pool, auth.entity_id, owner.tenant_id, owner_id).await?;
+        require_read_access(&state.pool, &auth, owner.tenant_id, owner_id).await?;
         let entities = repo::list_owned(&state.pool, owner_id)
             .await
             .map_err(gql_error)?;
@@ -50,14 +50,17 @@ impl EntityQuery {
         let id = parse_id(id, "id")?;
         let entity = repo::get_entity(&state.pool, id).await.map_err(gql_error)?;
         // Object read decision via the PDP. `manage` implies `read`, so the caller
-        // may read the entity if they can read or manage it.
-        let allowed = auth.entity_id == id
+        // may read the entity if they can read or manage it. The self-read
+        // convenience is owner authority, so a scoped token still routes through
+        // the ceiling-aware PDP rather than reading its own identity unconditionally.
+        let allowed = (auth.entity_id == id && !auth.scoped)
             || engine::allows_any(
                 &state.pool,
                 auth.entity_id,
                 "entity",
                 id,
                 &["read", "manage"],
+                auth.ceiling_for(auth.entity_id),
             )
             .await
             .map_err(gql_error)?;
@@ -94,8 +97,7 @@ impl EntityQuery {
         let offset = offset.map(i64::from).unwrap_or(0);
 
         if deleted != DeletedFilter::Live {
-            require_any_capability(&state.pool, auth.entity_id, &[("manage", Scope::Platform)])
-                .await?;
+            require_any_capability(&state.pool, &auth, &[("manage", Scope::Platform)]).await?;
             let list = repo::list_entities(
                 &state.pool,
                 entity_model::ListEntities {
@@ -119,6 +121,7 @@ impl EntityQuery {
             });
         }
 
+        auth.reject_scoped_listing().map_err(gql_error)?;
         let authorized = authz_repo::authorized_object_ids(
             &state.pool,
             AuthorizedObjectIdsQuery {
@@ -205,7 +208,7 @@ impl EntityMutation {
         let result = async {
             crate::auth::require_any_capability(
                 &state.pool,
-                auth.entity_id,
+                &auth,
                 &[
                     ("manage", scope_for_tenant(tenant_id)),
                     ("write", scope_for_tenant(tenant_id)),
@@ -275,7 +278,7 @@ impl EntityMutation {
         if auth.entity_id != id {
             require_any_capability(
                 &state.pool,
-                auth.entity_id,
+                &auth,
                 &[
                     ("manage", Scope::Object(id)),
                     ("manage", scope_for_tenant(existing.tenant_id)),
@@ -330,7 +333,7 @@ impl EntityMutation {
         if auth.entity_id != id {
             require_any_capability(
                 &state.pool,
-                auth.entity_id,
+                &auth,
                 &[
                     ("manage", Scope::Object(id)),
                     ("manage", scope_for_tenant(existing.tenant_id)),
@@ -365,7 +368,7 @@ impl EntityMutation {
     async fn restore_entity(&self, ctx: &Context<'_>, id: ID) -> Result<bool> {
         let auth = require_auth(ctx)?;
         let state = ctx.data::<AppState>()?;
-        require_any_capability(&state.pool, auth.entity_id, &[("manage", Scope::Platform)]).await?;
+        require_any_capability(&state.pool, &auth, &[("manage", Scope::Platform)]).await?;
         let id = parse_id(id, "id")?;
         repo::restore_entity(&state.pool, id, Some(auth.entity_id))
             .await
@@ -392,7 +395,7 @@ impl EntityMutation {
     async fn purge_entity(&self, ctx: &Context<'_>, id: ID) -> Result<bool> {
         let auth = require_auth(ctx)?;
         let state = ctx.data::<AppState>()?;
-        require_any_capability(&state.pool, auth.entity_id, &[("manage", Scope::Platform)]).await?;
+        require_any_capability(&state.pool, &auth, &[("manage", Scope::Platform)]).await?;
         let id = parse_id(id, "id")?;
         let tenant_id = repo::purge_entity(&state.pool, id)
             .await
@@ -428,7 +431,7 @@ impl EntityMutation {
             let group = repo::get_group(&state.pool, group_id).await?;
             crate::auth::require_any_capability(
                 &state.pool,
-                auth.entity_id,
+                &auth,
                 &[
                     ("manage", Scope::Object(entity_id)),
                     ("write", Scope::Object(entity_id)),
@@ -475,7 +478,7 @@ impl EntityMutation {
             let entity = repo::get_entity(&state.pool, entity_id).await?;
             crate::auth::require_any_capability(
                 &state.pool,
-                auth.entity_id,
+                &auth,
                 &[
                     ("manage", Scope::Object(entity_id)),
                     ("write", Scope::Object(entity_id)),
@@ -528,7 +531,7 @@ impl EntityMutation {
         let state = ctx.data::<AppState>()?;
         let owner_id = parse_id(owner_id, "ownerId")?;
         let owned_id = parse_id(owned_id, "ownedId")?;
-        require_ownership_manage(state, auth.entity_id, owner_id, owned_id).await?;
+        require_ownership_manage(state, &auth, owner_id, owned_id).await?;
         let ownership = repo::create_ownership(
             &state.pool,
             owner_id,
@@ -550,7 +553,7 @@ impl EntityMutation {
         let state = ctx.data::<AppState>()?;
         let owner_id = parse_id(owner_id, "ownerId")?;
         let owned_id = parse_id(owned_id, "ownedId")?;
-        require_ownership_manage(state, auth.entity_id, owner_id, owned_id).await?;
+        require_ownership_manage(state, &auth, owner_id, owned_id).await?;
         repo::delete_ownership(&state.pool, owner_id, owned_id)
             .await
             .map_err(gql_error)?;
@@ -568,7 +571,7 @@ async fn change_entity_status(ctx: &Context<'_>, id: ID, status: EntityStatus) -
         .map_err(gql_error)?;
     require_any_capability(
         &state.pool,
-        auth.entity_id,
+        &auth,
         &[
             ("manage", scope_for_tenant(existing.tenant_id)),
             ("write", scope_for_tenant(existing.tenant_id)),
@@ -609,7 +612,7 @@ async fn change_entity_status(ctx: &Context<'_>, id: ID, status: EntityStatus) -
 
 async fn require_ownership_manage(
     state: &AppState,
-    actor_id: uuid::Uuid,
+    auth: &AuthContext,
     owner_id: uuid::Uuid,
     owned_id: uuid::Uuid,
 ) -> Result<()> {
@@ -621,7 +624,7 @@ async fn require_ownership_manage(
         .map_err(gql_error)?;
     require_any_capability(
         &state.pool,
-        actor_id,
+        auth,
         &[
             ("manage", Scope::Object(owner_id)),
             ("manage", scope_for_tenant(owner.tenant_id)),
@@ -630,7 +633,7 @@ async fn require_ownership_manage(
     .await?;
     require_any_capability(
         &state.pool,
-        actor_id,
+        auth,
         &[
             ("manage", Scope::Object(owned_id)),
             ("manage", scope_for_tenant(owned.tenant_id)),

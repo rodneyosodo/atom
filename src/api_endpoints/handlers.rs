@@ -84,7 +84,7 @@ pub async fn custom_endpoint(
 
     if let Err(err) = require_any_capability(
         &state.pool,
-        caller.entity_id,
+        &caller,
         &[
             ("execute", Scope::Object(endpoint.id)),
             ("manage", Scope::Object(endpoint.id)),
@@ -380,6 +380,7 @@ async fn execution_auth_context(
                 entity_id: service_entity_id,
                 tenant_id,
                 session_id: None,
+                ..Default::default()
             })
         }
         _ => Err(AppError::bad_request("unsupported api endpoint auth mode")),

@@ -39,12 +39,22 @@ pub struct Claims {
     pub iat: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 #[allow(dead_code)]
 pub struct AuthContext {
     pub entity_id: Uuid,
     pub tenant_id: Option<Uuid>,
     pub session_id: Option<Uuid>,
+    /// The credential that authenticated this request, when it was an access
+    /// token (`atom_...`). `None` for JWT/session auth.
+    pub credential_id: Option<Uuid>,
+    /// True when authenticated by a *scoped* access token — its authority is
+    /// capped by `ceiling`. Fails closed: a scoped token with an empty ceiling
+    /// grants nothing.
+    pub scoped: bool,
+    /// The loaded permission ceiling for a scoped access token; `None` for
+    /// unscoped tokens and JWT/session auth (no cap).
+    pub ceiling: Option<std::sync::Arc<crate::authz::repo::CredentialCeiling>>,
 }
 
 /// Extractor that requires the authenticated entity to hold a `manage` policy
@@ -237,6 +247,7 @@ async fn auth_from_jwt(state: &AppState, token: &str) -> Result<AuthContext, App
         entity_id,
         tenant_id: entity_tenant_id,
         session_id: Some(session_id),
+        ..Default::default()
     })
 }
 
@@ -251,6 +262,7 @@ async fn auth_from_api_key(state: &AppState, key: &str) -> Result<AuthContext, A
                   c.secret_hash,
                   c.status,
                   c.expires_at,
+                  c.scoped,
                   e.tenant_id,
                   e.status AS entity_status,
                   t.status AS tenant_status
@@ -262,7 +274,7 @@ async fn auth_from_api_key(state: &AppState, key: &str) -> Result<AuthContext, A
              AND (t.id IS NULL OR t.deleted_at IS NULL)"#,
     )
     .bind(cred_id)
-    .bind(CredentialKind::ApiKey)
+    .bind(CredentialKind::AccessToken)
     .fetch_one(&state.pool)
     .await
     .map_err(|e| match e {
@@ -314,11 +326,81 @@ async fn auth_from_api_key(state: &AppState, key: &str) -> Result<AuthContext, A
 
     let tenant_id: Option<Uuid> = row.try_get("tenant_id").unwrap_or(None);
 
+    // Scoped access tokens carry a permission ceiling loaded here once per request
+    // and intersected with the owner's live grants at every authorization point.
+    let scoped: bool = row.try_get("scoped").unwrap_or(false);
+    let ceiling = if scoped {
+        Some(std::sync::Arc::new(
+            crate::authz::repo::load_credential_ceiling(&state.pool, cred_id).await?,
+        ))
+    } else {
+        None
+    };
+
     Ok(AuthContext {
         entity_id,
         tenant_id,
         session_id: None,
+        credential_id: Some(cred_id),
+        scoped,
+        ceiling,
     })
+}
+
+impl AuthContext {
+    /// The permission ceiling to apply when `subject_id` is the token owner
+    /// acting on its own behalf. Returns `None` for unscoped/JWT auth and for
+    /// decisions about a *different* subject (delegated `authz.check`), where the
+    /// caller's token must not alter the subject's decision.
+    pub fn ceiling_for(&self, subject_id: Uuid) -> Option<&crate::authz::repo::CredentialCeiling> {
+        if self.scoped && subject_id == self.entity_id {
+            self.ceiling.as_deref()
+        } else {
+            None
+        }
+    }
+
+    /// Fail closed on owner-wide authorized-listing surfaces that are not yet
+    /// ceiling-aware. A scoped access token must not receive the owner's full
+    /// authorized set (which ignores the token's ceiling); callers should use the
+    /// per-object `authz.check`, which returns the token-limited answer. `Ok` for
+    /// unscoped/JWT auth.
+    pub fn reject_scoped_listing(&self) -> Result<(), AppError> {
+        if self.scoped {
+            return Err(AppError::bad_request(
+                "scoped access tokens cannot list authorized objects; use authzCheck per object",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Credential management (minting or rewriting credentials) is never available
+    /// to a scoped access token, even for its own entity — otherwise a
+    /// least-privilege token could mint or widen a sibling credential and
+    /// self-escalate. `Ok` for unscoped/JWT auth.
+    pub fn reject_scoped_credential_management(&self) -> Result<(), AppError> {
+        if self.scoped {
+            return Err(AppError::Forbidden);
+        }
+        Ok(())
+    }
+}
+
+/// Whether a scoped token's `ceiling` permits `action_id` at `scopes`. `None`
+/// (unscoped token, JWT, or system/background context) imposes no cap. A scoped
+/// ceiling that does not match — including an empty one — returns `false`, so the
+/// gate fails closed. Conditional ceiling entries cannot satisfy the coarse gate
+/// (`gate_action_allows` requires an unconditional allow), matching the gate's own
+/// treatment of conditional grants.
+fn ceiling_permits_gate(
+    ceiling: Option<&crate::authz::repo::CredentialCeiling>,
+    action_id: Uuid,
+    scopes: &[ScopeCheck],
+) -> bool {
+    match ceiling {
+        Some(ceiling) => gate_action_allows(&ceiling.entries, action_id, scopes),
+        None => true,
+    }
 }
 
 /// Validate a Bearer token (JWT or API key) and return the authenticated context.
@@ -428,10 +510,11 @@ pub enum Scope {
 /// platform-scope bindings for the same capability.
 pub async fn has_capability_in_scope(
     pool: &PgPool,
-    entity_id: Uuid,
+    auth: &AuthContext,
     capability_name: &str,
     scope: Scope,
 ) -> Result<bool, AppError> {
+    let entity_id = auth.entity_id;
     if !actor_is_active(pool, entity_id).await? {
         return Ok(false);
     }
@@ -445,11 +528,11 @@ pub async fn has_capability_in_scope(
     };
     let grants = crate::authz::repo::effective_grants_for_subject(pool, entity_id).await?;
     let gate_tenant = gate_tenant_context(pool, scope).await?;
-    Ok(gate_action_allows(
-        &grants,
-        action_id,
-        &[(scope, gate_tenant)],
-    ))
+    let scopes = [(scope, gate_tenant)];
+    // A scoped access token can never exceed its ceiling, even when the owner's
+    // own grants would allow the action.
+    Ok(gate_action_allows(&grants, action_id, &scopes)
+        && ceiling_permits_gate(auth.ceiling_for(entity_id), action_id, &scopes))
 }
 
 /// The tenant whose objects the gate concerns, used to apply the same assignment
@@ -587,20 +670,12 @@ async fn action_id_by_name(pool: &PgPool, name: &str) -> Result<Option<Uuid>, Ap
         .map_err(db_err)
 }
 
-pub async fn has_capability_at_scope(
-    pool: &PgPool,
-    entity_id: Uuid,
-    capability_name: &str,
-    scope: Scope,
-) -> Result<bool, AppError> {
-    has_capability_in_scope(pool, entity_id, capability_name, scope).await
-}
-
 pub async fn require_any_capability(
     pool: &PgPool,
-    entity_id: Uuid,
+    auth: &AuthContext,
     checks: &[(&str, Scope)],
 ) -> Result<(), AppError> {
+    let entity_id = auth.entity_id;
     if checks.is_empty() {
         return Err(AppError::Forbidden);
     }
@@ -660,8 +735,11 @@ pub async fn require_any_capability(
 
     // Any one action whose combined scopes yield an allow (not overridden by a
     // deny at any of them) authorizes the request.
+    let ceiling = auth.ceiling_for(entity_id);
     for (action_id, action_scopes) in &by_action {
-        if gate_action_allows(&grants, *action_id, action_scopes) {
+        if gate_action_allows(&grants, *action_id, action_scopes)
+            && ceiling_permits_gate(ceiling, *action_id, action_scopes)
+        {
             return Ok(());
         }
     }
@@ -698,23 +776,23 @@ pub fn scope_for_tenant(tenant_id: Option<Uuid>) -> Scope {
 
 pub async fn require_list_access(
     pool: &PgPool,
-    entity_id: Uuid,
+    auth: &AuthContext,
     tenant_id: Option<Uuid>,
 ) -> Result<(), AppError> {
     let scope = scope_for_tenant(tenant_id);
-    require_any_capability(pool, entity_id, &[("read", scope), ("manage", scope)]).await
+    require_any_capability(pool, auth, &[("read", scope), ("manage", scope)]).await
 }
 
 pub async fn require_read_access(
     pool: &PgPool,
-    entity_id: Uuid,
+    auth: &AuthContext,
     tenant_id: Option<Uuid>,
     object_id: Uuid,
 ) -> Result<(), AppError> {
     let tenant_scope = scope_for_tenant(tenant_id);
     require_any_capability(
         pool,
-        entity_id,
+        auth,
         &[
             ("read", Scope::Object(object_id)),
             ("manage", Scope::Object(object_id)),
@@ -727,33 +805,33 @@ pub async fn require_read_access(
 
 pub async fn require_role_read(
     pool: &PgPool,
-    entity_id: Uuid,
+    auth: &AuthContext,
     tenant_id: Option<Uuid>,
 ) -> Result<(), AppError> {
     let scope = scope_for_tenant(tenant_id);
-    require_any_capability(pool, entity_id, &[("role.manage", scope), ("read", scope)]).await
+    require_any_capability(pool, auth, &[("role.manage", scope), ("read", scope)]).await
 }
 
 /// Gate for reading policy records in a tenant (or platform when `tenant_id` is
 /// `None`): `policy.manage`, `read`, or `manage` at that scope.
 pub async fn require_policy_read(
     pool: &PgPool,
-    entity_id: Uuid,
+    auth: &AuthContext,
     tenant_id: Option<Uuid>,
 ) -> Result<(), AppError> {
     let scope = scope_for_tenant(tenant_id);
     require_any_capability(
         pool,
-        entity_id,
+        auth,
         &[("policy.manage", scope), ("read", scope), ("manage", scope)],
     )
     .await
 }
 
-pub async fn require_explain_access(pool: &PgPool, entity_id: Uuid) -> Result<(), AppError> {
+pub async fn require_explain_access(pool: &PgPool, auth: &AuthContext) -> Result<(), AppError> {
     require_any_capability(
         pool,
-        entity_id,
+        auth,
         &[
             ("policy.manage", Scope::Platform),
             ("manage", Scope::Platform),
@@ -764,8 +842,8 @@ pub async fn require_explain_access(pool: &PgPool, entity_id: Uuid) -> Result<()
 
 /// Convenience for the common platform-`manage` check used by the existing
 /// `RequireManage` extractor and admin hygiene endpoints.
-pub async fn has_global_manage(pool: &PgPool, entity_id: Uuid) -> Result<bool, AppError> {
-    has_capability_in_scope(pool, entity_id, "manage", Scope::Platform).await
+pub async fn has_global_manage(pool: &PgPool, auth: &AuthContext) -> Result<bool, AppError> {
+    has_capability_in_scope(pool, auth, "manage", Scope::Platform).await
 }
 
 /// Imperative gate: returns `Forbidden` if the entity does not hold the
@@ -773,11 +851,11 @@ pub async fn has_global_manage(pool: &PgPool, entity_id: Uuid) -> Result<bool, A
 /// finer check than `RequireManage`.
 pub async fn require_capability(
     pool: &PgPool,
-    entity_id: Uuid,
+    auth: &AuthContext,
     capability_name: &str,
     scope: Scope,
 ) -> Result<(), AppError> {
-    if has_capability_in_scope(pool, entity_id, capability_name, scope).await? {
+    if has_capability_in_scope(pool, auth, capability_name, scope).await? {
         Ok(())
     } else {
         Err(AppError::Forbidden)
@@ -819,7 +897,7 @@ where
         let app_state = AppState::from_ref(state);
         let auth = AuthContext::from_request_parts(parts, state).await?;
 
-        if !has_global_manage(&app_state.pool, auth.entity_id).await? {
+        if !has_global_manage(&app_state.pool, &auth).await? {
             return Err(AppError::Forbidden);
         }
 

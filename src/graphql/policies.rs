@@ -57,10 +57,9 @@ impl PolicyQuery {
         let tenant_id = parse_optional_id(tenant_id, "tenantId")?;
         let deleted = parse_deleted_filter(deleted);
         if deleted != DeletedFilter::Live {
-            require_any_capability(&state.pool, auth.entity_id, &[("manage", Scope::Platform)])
-                .await?;
+            require_any_capability(&state.pool, &auth, &[("manage", Scope::Platform)]).await?;
         } else {
-            require_role_read(&state.pool, auth.entity_id, tenant_id).await?;
+            require_role_read(&state.pool, &auth, tenant_id).await?;
         }
         let list = authz_repo::list_roles(
             &state.pool,
@@ -89,7 +88,7 @@ impl PolicyQuery {
         let role = authz_repo::get_role(&state.pool, id)
             .await
             .map_err(gql_error)?;
-        require_role_read(&state.pool, auth.entity_id, role.tenant_id).await?;
+        require_role_read(&state.pool, &auth, role.tenant_id).await?;
         Ok(role.into())
     }
 
@@ -105,7 +104,7 @@ impl PolicyQuery {
         let auth = require_auth(ctx)?;
         let state = ctx.data::<AppState>()?;
         let tenant_id = parse_optional_id(tenant_id, "tenantId")?;
-        require_policy_read(&state.pool, auth.entity_id, tenant_id).await?;
+        require_policy_read(&state.pool, &auth, tenant_id).await?;
         let list = authz_repo::list_capabilities(
             &state.pool,
             ListCapabilities {
@@ -137,7 +136,7 @@ impl PolicyQuery {
         let auth = require_auth(ctx)?;
         let state = ctx.data::<AppState>()?;
         let tenant_id = parse_optional_id(tenant_id, "tenantId")?;
-        require_policy_read(&state.pool, auth.entity_id, tenant_id).await?;
+        require_policy_read(&state.pool, &auth, tenant_id).await?;
         let list = authz_repo::list_capability_applicability(
             &state.pool,
             action_name,
@@ -174,7 +173,7 @@ impl PolicyQuery {
         let auth = require_auth(ctx)?;
         let state = ctx.data::<AppState>()?;
         let tenant_id = parse_optional_id(tenant_id, "tenantId")?;
-        require_policy_read(&state.pool, auth.entity_id, tenant_id).await?;
+        require_policy_read(&state.pool, &auth, tenant_id).await?;
         let object_kind = object_kind
             .map(|value| parse_object_kind(value, "objectKind"))
             .transpose()?;
@@ -202,7 +201,7 @@ impl PolicyQuery {
     async fn action(&self, ctx: &Context<'_>, id: ID) -> Result<Action> {
         let auth = require_auth(ctx)?;
         let state = ctx.data::<AppState>()?;
-        require_policy_read(&state.pool, auth.entity_id, None).await?;
+        require_policy_read(&state.pool, &auth, None).await?;
         let action = authz_repo::get_capability(&state.pool, parse_id(id, "id")?)
             .await
             .map_err(gql_error)?;
@@ -220,7 +219,7 @@ impl PolicyQuery {
         let auth = require_auth(ctx)?;
         let state = ctx.data::<AppState>()?;
         let tenant_id = parse_optional_id(tenant_id, "tenantId")?;
-        require_policy_read(&state.pool, auth.entity_id, tenant_id).await?;
+        require_policy_read(&state.pool, &auth, tenant_id).await?;
         let list = authz_repo::list_permission_blocks(
             &state.pool,
             ListPermissionBlocks {
@@ -244,7 +243,7 @@ impl PolicyQuery {
         let block = authz_repo::get_permission_block(&state.pool, parse_id(id, "id")?)
             .await
             .map_err(gql_error)?;
-        require_policy_read(&state.pool, auth.entity_id, block.tenant_id).await?;
+        require_policy_read(&state.pool, &auth, block.tenant_id).await?;
         Ok(block.into())
     }
 
@@ -262,7 +261,7 @@ impl PolicyQuery {
         let auth = require_auth(ctx)?;
         let state = ctx.data::<AppState>()?;
         let tenant_id = parse_optional_id(tenant_id, "tenantId")?;
-        require_policy_read(&state.pool, auth.entity_id, tenant_id).await?;
+        require_policy_read(&state.pool, &auth, tenant_id).await?;
         let list = authz_repo::list_role_assignments(
             &state.pool,
             ListRoleAssignments {
@@ -296,7 +295,7 @@ impl PolicyQuery {
         let auth = require_auth(ctx)?;
         let state = ctx.data::<AppState>()?;
         let tenant_id = parse_optional_id(tenant_id, "tenantId")?;
-        require_policy_read(&state.pool, auth.entity_id, tenant_id).await?;
+        require_policy_read(&state.pool, &auth, tenant_id).await?;
         let list = authz_repo::list_direct_policies(
             &state.pool,
             ListDirectPolicies {
@@ -334,7 +333,7 @@ impl PolicyMutation {
         let result = async {
             require_capability(
                 &state.pool,
-                auth.entity_id,
+                &auth,
                 "role.manage",
                 scope_for_tenant(tenant_id),
             )
@@ -364,7 +363,7 @@ impl PolicyMutation {
             let role = authz_repo::get_role(&state.pool, id).await?;
             require_capability(
                 &state.pool,
-                auth.entity_id,
+                &auth,
                 "role.manage",
                 scope_for_tenant(role.tenant_id),
             )
@@ -412,7 +411,7 @@ impl PolicyMutation {
             let tenant_id = role.tenant_id;
             require_capability(
                 &state.pool,
-                auth.entity_id,
+                &auth,
                 "role.manage",
                 scope_for_tenant(tenant_id),
             )
@@ -449,7 +448,7 @@ impl PolicyMutation {
             let tenant_id = role.tenant_id;
             require_capability(
                 &state.pool,
-                auth.entity_id,
+                &auth,
                 "role.manage",
                 scope_for_tenant(tenant_id),
             )
@@ -479,7 +478,7 @@ impl PolicyMutation {
     async fn restore_role(&self, ctx: &Context<'_>, id: ID) -> Result<bool> {
         let auth = require_auth(ctx)?;
         let state = ctx.data::<AppState>()?;
-        require_capability(&state.pool, auth.entity_id, "manage", Scope::Platform)
+        require_capability(&state.pool, &auth, "manage", Scope::Platform)
             .await
             .map_err(gql_error)?;
         let id = parse_id(id, "id")?;
@@ -511,7 +510,7 @@ impl PolicyMutation {
     async fn purge_role(&self, ctx: &Context<'_>, id: ID) -> Result<bool> {
         let auth = require_auth(ctx)?;
         let state = ctx.data::<AppState>()?;
-        require_capability(&state.pool, auth.entity_id, "manage", Scope::Platform)
+        require_capability(&state.pool, &auth, "manage", Scope::Platform)
             .await
             .map_err(gql_error)?;
         let id = parse_id(id, "id")?;
@@ -549,13 +548,7 @@ impl PolicyMutation {
                 .collect()
         });
         let result = async {
-            require_capability(
-                &state.pool,
-                auth.entity_id,
-                "policy.manage",
-                Scope::Platform,
-            )
-            .await?;
+            require_capability(&state.pool, &auth, "policy.manage", Scope::Platform).await?;
             authz_repo::create_capability(
                 &state.pool,
                 CreateCapability {
@@ -592,13 +585,7 @@ impl PolicyMutation {
         let object_kind = input.object_kind;
         let object_type = input.object_type;
         let result = async {
-            require_capability(
-                &state.pool,
-                auth.entity_id,
-                "policy.manage",
-                Scope::Platform,
-            )
-            .await?;
+            require_capability(&state.pool, &auth, "policy.manage", Scope::Platform).await?;
             authz_repo::add_capability_applicability(
                 &state.pool,
                 action_id,
@@ -633,13 +620,7 @@ impl PolicyMutation {
         let object_kind = input.object_kind;
         let object_type = input.object_type;
         let result = async {
-            require_capability(
-                &state.pool,
-                auth.entity_id,
-                "policy.manage",
-                Scope::Platform,
-            )
-            .await?;
+            require_capability(&state.pool, &auth, "policy.manage", Scope::Platform).await?;
             authz_repo::remove_capability_applicability(
                 &state.pool,
                 action_id,
@@ -673,7 +654,7 @@ impl PolicyMutation {
         let tenant_id = parse_optional_id(input.tenant_id.clone(), "tenantId")?;
         require_capability(
             &state.pool,
-            auth.entity_id,
+            &auth,
             "policy.manage",
             scope_for_tenant(tenant_id),
         )
@@ -706,7 +687,7 @@ impl PolicyMutation {
             .map_err(gql_error)?;
         require_capability(
             &state.pool,
-            auth.entity_id,
+            &auth,
             "policy.manage",
             scope_for_tenant(existing.tenant_id),
         )
@@ -740,13 +721,7 @@ impl PolicyMutation {
                 .collect()
         });
         let result = async {
-            require_capability(
-                &state.pool,
-                auth.entity_id,
-                "policy.manage",
-                Scope::Platform,
-            )
-            .await?;
+            require_capability(&state.pool, &auth, "policy.manage", Scope::Platform).await?;
             authz_repo::update_capability(
                 &state.pool,
                 action_id,
@@ -778,13 +753,7 @@ impl PolicyMutation {
         let state = ctx.data::<AppState>()?;
         let action_id = parse_id(id, "id")?;
         let result = async {
-            require_capability(
-                &state.pool,
-                auth.entity_id,
-                "policy.manage",
-                Scope::Platform,
-            )
-            .await?;
+            require_capability(&state.pool, &auth, "policy.manage", Scope::Platform).await?;
             authz_repo::delete_capability(&state.pool, action_id).await
         }
         .await;
@@ -820,7 +789,7 @@ impl PolicyMutation {
         let result = async {
             require_capability(
                 &state.pool,
-                auth.entity_id,
+                &auth,
                 "policy.manage",
                 scope_for_tenant(tenant_id),
             )
@@ -865,7 +834,7 @@ impl PolicyMutation {
             let tenant_id = block.tenant_id;
             require_capability(
                 &state.pool,
-                auth.entity_id,
+                &auth,
                 "policy.manage",
                 scope_for_tenant(tenant_id),
             )
@@ -902,7 +871,7 @@ impl PolicyMutation {
         let result = async {
             require_capability(
                 &state.pool,
-                auth.entity_id,
+                &auth,
                 "policy.manage",
                 scope_for_tenant(tenant_id),
             )
@@ -942,7 +911,7 @@ impl PolicyMutation {
             let tenant_id = assignment.tenant_id;
             require_capability(
                 &state.pool,
-                auth.entity_id,
+                &auth,
                 "policy.manage",
                 scope_for_tenant(tenant_id),
             )
@@ -979,7 +948,7 @@ impl PolicyMutation {
         let result = async {
             require_capability(
                 &state.pool,
-                auth.entity_id,
+                &auth,
                 "policy.manage",
                 scope_for_tenant(tenant_id),
             )
@@ -1019,7 +988,7 @@ impl PolicyMutation {
             let tenant_id = policy.tenant_id;
             require_capability(
                 &state.pool,
-                auth.entity_id,
+                &auth,
                 "policy.manage",
                 scope_for_tenant(tenant_id),
             )

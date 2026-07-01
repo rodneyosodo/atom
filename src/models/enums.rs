@@ -11,6 +11,14 @@ pub enum EntityKind {
     Application,
 }
 
+impl EntityKind {
+    /// Machine identities authenticate with machine secrets (shared keys, API keys,
+    /// certificates) rather than human passwords. Every kind except `Human` is a machine.
+    pub fn is_machine(&self) -> bool {
+        !matches!(self, EntityKind::Human)
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "text", rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
@@ -21,14 +29,30 @@ pub enum EntityStatus {
     Suspended,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "text", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialKind {
     Password,
-    ApiKey,
+    /// Bearer token credential (`atom_...`). Serves both provisioned "API key" use
+    /// (unscoped) and self-service personal tokens (scoped via a permission ceiling).
+    AccessToken,
     Certificate,
     SharedKey,
+}
+
+impl CredentialKind {
+    /// Single authority for which credential kinds an entity kind may hold.
+    /// `SharedKey` is a retrievable machine secret and is forbidden for humans;
+    /// all other kinds are unrestricted at this layer.
+    pub fn allowed_for(&self, entity: &EntityKind) -> bool {
+        match self {
+            CredentialKind::SharedKey => entity.is_machine(),
+            CredentialKind::Password
+            | CredentialKind::AccessToken
+            | CredentialKind::Certificate => true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]

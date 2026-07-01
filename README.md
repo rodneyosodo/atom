@@ -11,7 +11,7 @@ Built for the [Magistrala](https://github.com/absmach/magistrala) IoT platform, 
 ## What it does
 
 - **Identity** — CRUD for any principal type: humans, devices, services, workloads, applications. All are first-class *entities*; no special user class.
-- **Authentication** — password login (JWT), long-lived API keys, session management.
+- **Authentication** — password login (JWT), long-lived API keys, scoped access tokens, session management.
 - **Authorization** — actions, permission blocks, roles, role assignments, Direct Policies, and ABAC guardrails.
 - **Grouping** — Object Groups define where access applies; Principal Groups define who receives roles.
 - **Ownership** — parent/child relationships between entities.
@@ -27,6 +27,7 @@ This README is the quick start and orientation document. It should not duplicate
 - Access model source of truth: [product-docs/11-access-model-simplification.md](product-docs/11-access-model-simplification.md)
 - Magistrala integration source of truth: [product-docs/10-magistrala-on-atom.md](product-docs/10-magistrala-on-atom.md)
 - Certificate lifecycle source of truth: [product-docs/12-certificates.md](product-docs/12-certificates.md)
+- Scoped access token source of truth: [product-docs/13-access-tokens.md](product-docs/13-access-tokens.md)
 - Beginner/operator guide: [docs/content/docs/simple-words.mdx](docs/content/docs/simple-words.mdx)
 - Architecture diagrams: [docs/content/docs/architecture/index.mdx](docs/content/docs/architecture/index.mdx)
 - Certificate guide with flow diagram: [docs/content/docs/authentication/certificates.mdx](docs/content/docs/authentication/certificates.mdx)
@@ -575,7 +576,7 @@ Generic application mapping:
 | `ATOM_DB_MAX_CONNECTIONS` / `ATOM_DB_MIN_CONNECTIONS`                                                                          | `20` / `0`                                           | Postgres pool size controls                                                             |
 | `ATOM_DB_ACQUIRE_TIMEOUT_SECS` / `ATOM_DB_CONNECT_TIMEOUT_SECS`                                                                | `30` / `10`                                          | Pool acquire and startup connect timeouts                                               |
 | `ATOM_DB_IDLE_TIMEOUT_SECS` / `ATOM_DB_MAX_LIFETIME_SECS`                                                                      | `600` / `1800`                                       | Pool idle and lifetime limits                                                           |
-| `ATOM_KEY_ENCRYPTION_KEY`                                                                                                      | *(required for production)*                          | Base64 32-byte AES-256-GCM key used to encrypt signing private keys                     |
+| `ATOM_KEY_ENCRYPTION_KEY`                                                                                                      | *(required for production)*                          | Base64 32-byte AES-256-GCM key encrypting all recoverable secrets at rest: signing private keys and retrievable credential secrets (shared keys) |
 | `ATOM_KEY_ENCRYPTION_KEY_ID`                                                                                                   | `local:v1`                                           | Operator-visible signing-key encryption key id                                          |
 | `ATOM_ALLOW_PLAINTEXT_SIGNING_KEYS`                                                                                            | `false`                                              | Development-only fallback for plaintext signing key rows                                |
 | `ATOM_AUDIT_RETENTION_DAYS` / `ATOM_AUDIT_RETENTION_ENABLED`                                                                   | `365` / `true`                                       | Background audit cleanup policy                                                         |

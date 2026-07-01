@@ -145,9 +145,25 @@ ALTER TABLE tenants
 CREATE TABLE credentials (
     id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     entity_id   UUID        NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
-    kind        TEXT        NOT NULL CHECK (kind IN ('password', 'api_key', 'certificate', 'shared_key')),
+    kind        TEXT        NOT NULL CHECK (kind IN ('password', 'access_token', 'certificate', 'shared_key')),
     identifier  TEXT,
     secret_hash TEXT,
+    -- Access tokens with scoped = true carry a permission ceiling
+    -- (credential_permission_limits) and fail closed if it is absent. scoped is
+    -- independent of whether limit rows exist, so a deleted ceiling denies rather
+    -- than silently granting full owner authority.
+    scoped      BOOLEAN     NOT NULL DEFAULT false,
+    -- Recoverable secrets (e.g. shared keys) are envelope-encrypted at rest; the
+    -- plaintext is never stored. secret_hash remains the auth verifier, these
+    -- columns are the reveal source. See src/crypto.rs and identity::service.
+    secret_ciphertext BYTEA,
+    secret_nonce      BYTEA,
+    secret_key_id     TEXT,
+    secret_enc_alg    TEXT,
+    -- HMAC-SHA256 lookup digest for indexed shared-key authentication. The
+    -- digest is keyed with ATOM_KEY_ENCRYPTION_KEY, so a DB-only leak does not
+    -- enable cheap enumeration of arbitrary operator-supplied keys.
+    secret_lookup_hash BYTEA,
     metadata    JSONB       NOT NULL DEFAULT '{}',
     status      TEXT        NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
     expires_at  TIMESTAMPTZ,
@@ -166,8 +182,16 @@ CREATE INDEX idx_credentials_certificate_status_expiry
 CREATE INDEX idx_credentials_shared_key_status
     ON credentials(entity_id, status, expires_at)
     WHERE kind = 'shared_key';
+CREATE INDEX idx_credentials_shared_key_lookup
+    ON credentials(entity_id, secret_lookup_hash, expires_at)
+    WHERE kind = 'shared_key'
+      AND status = 'active'
+      AND secret_lookup_hash IS NOT NULL;
 
-CREATE OR REPLACE FUNCTION enforce_shared_key_device_credential() RETURNS trigger AS $$
+-- Shared keys are retrievable machine secrets: allowed for any machine entity,
+-- forbidden for humans. The stable invariant enforced here is "shared_key =>
+-- entity is non-human", which holds as new machine kinds are added.
+CREATE OR REPLACE FUNCTION enforce_shared_key_non_human_credential() RETURNS trigger AS $$
 DECLARE
     entity_kind TEXT;
 BEGIN
@@ -181,8 +205,8 @@ BEGIN
      WHERE e.id = NEW.entity_id
      FOR UPDATE;
 
-    IF entity_kind IS DISTINCT FROM 'device' THEN
-        RAISE EXCEPTION 'shared_key credentials can only belong to device entities'
+    IF entity_kind = 'human' THEN
+        RAISE EXCEPTION 'shared_key credentials cannot belong to human entities'
             USING ERRCODE = '23514';
     END IF;
 
@@ -190,20 +214,20 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER trg_credentials_shared_key_device_only
+CREATE TRIGGER trg_credentials_shared_key_non_human_only
     BEFORE INSERT OR UPDATE OF entity_id, kind ON credentials
-    FOR EACH ROW EXECUTE FUNCTION enforce_shared_key_device_credential();
+    FOR EACH ROW EXECUTE FUNCTION enforce_shared_key_non_human_credential();
 
-CREATE OR REPLACE FUNCTION prevent_non_device_entity_with_shared_key() RETURNS trigger AS $$
+CREATE OR REPLACE FUNCTION prevent_human_entity_with_shared_key() RETURNS trigger AS $$
 BEGIN
-    IF NEW.kind <> 'device'
+    IF NEW.kind = 'human'
        AND EXISTS (
            SELECT 1
              FROM credentials c
             WHERE c.entity_id = NEW.id
               AND c.kind = 'shared_key'
        ) THEN
-        RAISE EXCEPTION 'entities with shared_key credentials must remain device entities'
+        RAISE EXCEPTION 'entities with shared_key credentials cannot become human entities'
             USING ERRCODE = '23514';
     END IF;
 
@@ -211,11 +235,11 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER trg_entities_shared_key_device_only
+CREATE TRIGGER trg_entities_shared_key_non_human_only
     BEFORE UPDATE OF kind ON entities
     FOR EACH ROW
     WHEN (OLD.kind IS DISTINCT FROM NEW.kind)
-    EXECUTE FUNCTION prevent_non_device_entity_with_shared_key();
+    EXECUTE FUNCTION prevent_human_entity_with_shared_key();
 
 CREATE TABLE certificate_crl_state (
     issuer_fingerprint_sha256 TEXT PRIMARY KEY,
@@ -757,6 +781,60 @@ SELECT
         WHEN pb.scope_mode IN ('group_child_groups', 'group_descendant_groups') THEN pb.group_id::text || ':group'
     END AS scope_ref
 FROM permission_blocks pb;
+
+-- Permission ceiling for a scoped access token. Mirrors permission_blocks' scope
+-- shape so the PDP/gate matchers can be reused unchanged. Effective access of a
+-- scoped token = owner's live grants ∩ these allow-list limits (no deny in v1).
+-- v1 supports the directly-matchable scope modes only; group-tree ceilings are a
+-- future extension.
+CREATE TABLE credential_permission_limits (
+    id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    credential_id UUID        NOT NULL REFERENCES credentials(id) ON DELETE CASCADE,
+    scope_mode    TEXT        NOT NULL CHECK (scope_mode IN ('platform', 'tenant', 'object_kind', 'object_type', 'object')),
+    tenant_id     UUID        REFERENCES tenants(id) ON DELETE CASCADE,
+    object_kind   TEXT,
+    object_type   TEXT,
+    object_id     UUID,
+    conditions    JSONB       NOT NULL DEFAULT '{}',
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT credential_permission_limits_conditions_is_object
+        CHECK (jsonb_typeof(conditions) = 'object'),
+    CHECK (
+        (scope_mode = 'platform' AND tenant_id IS NULL AND object_id IS NULL AND object_kind IS NULL AND object_type IS NULL)
+        OR (scope_mode = 'tenant' AND tenant_id IS NOT NULL AND object_id IS NULL AND object_kind IS NULL AND object_type IS NULL)
+        OR (scope_mode = 'object_kind' AND object_kind IS NOT NULL AND object_id IS NULL AND object_type IS NULL)
+        OR (scope_mode = 'object_type' AND object_kind IS NOT NULL AND object_type IS NOT NULL AND object_id IS NULL)
+        OR (scope_mode = 'object' AND object_id IS NOT NULL)
+    )
+);
+CREATE INDEX idx_credential_permission_limits_credential
+    ON credential_permission_limits(credential_id);
+
+CREATE TABLE credential_permission_limit_actions (
+    limit_id  UUID NOT NULL REFERENCES credential_permission_limits(id) ON DELETE CASCADE,
+    action_id UUID NOT NULL REFERENCES actions(id) ON DELETE CASCADE,
+    PRIMARY KEY (limit_id, action_id)
+);
+CREATE INDEX idx_credential_permission_limit_actions_action
+    ON credential_permission_limit_actions(action_id);
+
+-- Canonical (scope_kind, scope_ref) for a ceiling row, mirroring
+-- permission_block_scopes so match_grant / scope_values_match treat a ceiling
+-- entry exactly like a permission block.
+CREATE VIEW credential_permission_limit_scopes AS
+SELECT
+    l.id AS limit_id,
+    l.scope_mode AS scope_kind,
+    CASE
+        WHEN l.scope_mode = 'platform' THEN NULL
+        WHEN l.scope_mode = 'tenant' THEN l.tenant_id::text
+        WHEN l.scope_mode = 'object_kind' THEN l.object_kind
+        -- object_type stores the full namespaced value (e.g. 'entity:device'),
+        -- matching permission_block_scopes; passed through, not reconstructed.
+        WHEN l.scope_mode = 'object_type' THEN l.object_type
+        WHEN l.scope_mode = 'object' THEN l.object_id::text
+    END AS scope_ref
+FROM credential_permission_limits l;
 
 -- Single subject grant expansion: direct policies, role-linked permission
 -- blocks, and active tenant-membership tenant visibility for one subject,

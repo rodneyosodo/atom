@@ -34,6 +34,7 @@ impl ResourceQuery {
     ) -> Result<Vec<String>> {
         let auth = require_auth(ctx)?;
         let state = ctx.data::<AppState>()?;
+        auth.reject_scoped_listing().map_err(gql_error)?;
         let tenant_id = parse_optional_id(tenant_id, "tenantId")?;
 
         authz_repo::authorized_resource_kinds(&state.pool, auth.entity_id, tenant_id)
@@ -65,8 +66,7 @@ impl ResourceQuery {
         let include_descendants = include_descendants.unwrap_or(false);
 
         if deleted != DeletedFilter::Live {
-            require_any_capability(&state.pool, auth.entity_id, &[("manage", Scope::Platform)])
-                .await?;
+            require_any_capability(&state.pool, &auth, &[("manage", Scope::Platform)]).await?;
             let list = authz_repo::list_resources(
                 &state.pool,
                 ListResources {
@@ -89,6 +89,7 @@ impl ResourceQuery {
             });
         }
 
+        auth.reject_scoped_listing().map_err(gql_error)?;
         let object_type = kind.as_deref().map(|kind| {
             if kind.contains(':') {
                 kind.to_string()
@@ -142,6 +143,7 @@ impl ResourceQuery {
             "resource",
             id,
             &["read", "manage"],
+            auth.ceiling_for(auth.entity_id),
         )
         .await
         .map_err(gql_error)?
@@ -182,7 +184,7 @@ impl ResourceMutation {
         let result = async {
             crate::auth::require_any_capability(
                 &state.pool,
-                auth.entity_id,
+                &auth,
                 &[
                     ("manage", scope_for_tenant(tenant_id)),
                     ("write", scope_for_tenant(tenant_id)),
@@ -235,7 +237,7 @@ impl ResourceMutation {
         let updated_fields = resource_update_fields(&input);
         require_any_capability(
             &state.pool,
-            auth.entity_id,
+            &auth,
             &[
                 ("manage", crate::auth::Scope::Object(id)),
                 ("manage", scope_for_tenant(existing.tenant_id)),
@@ -281,7 +283,7 @@ impl ResourceMutation {
             .map_err(gql_error)?;
         require_any_capability(
             &state.pool,
-            auth.entity_id,
+            &auth,
             &[
                 ("manage", crate::auth::Scope::Object(id)),
                 ("manage", scope_for_tenant(existing.tenant_id)),
@@ -315,7 +317,7 @@ impl ResourceMutation {
     async fn restore_resource(&self, ctx: &Context<'_>, id: ID) -> Result<bool> {
         let auth = require_auth(ctx)?;
         let state = ctx.data::<AppState>()?;
-        require_any_capability(&state.pool, auth.entity_id, &[("manage", Scope::Platform)]).await?;
+        require_any_capability(&state.pool, &auth, &[("manage", Scope::Platform)]).await?;
         let id = parse_id(id, "id")?;
         authz_repo::restore_resource(&state.pool, id, Some(auth.entity_id))
             .await
@@ -344,7 +346,7 @@ impl ResourceMutation {
     async fn purge_resource(&self, ctx: &Context<'_>, id: ID) -> Result<bool> {
         let auth = require_auth(ctx)?;
         let state = ctx.data::<AppState>()?;
-        require_any_capability(&state.pool, auth.entity_id, &[("manage", Scope::Platform)]).await?;
+        require_any_capability(&state.pool, &auth, &[("manage", Scope::Platform)]).await?;
         let id = parse_id(id, "id")?;
         let tenant_id = authz_repo::purge_resource(&state.pool, id)
             .await
@@ -379,7 +381,7 @@ impl ResourceMutation {
             let resource = authz_repo::get_resource(&state.pool, resource_id).await?;
             crate::auth::require_any_capability(
                 &state.pool,
-                auth.entity_id,
+                &auth,
                 &[
                     ("manage", crate::auth::Scope::Object(resource_id)),
                     ("write", crate::auth::Scope::Object(resource_id)),
@@ -428,7 +430,7 @@ impl ResourceMutation {
             let resource = authz_repo::get_resource(&state.pool, resource_id).await?;
             crate::auth::require_any_capability(
                 &state.pool,
-                auth.entity_id,
+                &auth,
                 &[
                     ("manage", crate::auth::Scope::Object(resource_id)),
                     ("write", crate::auth::Scope::Object(resource_id)),

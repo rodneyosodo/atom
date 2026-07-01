@@ -15,7 +15,11 @@ use crate::{
     authz::{access, engine, repo},
     certs,
     identity::service as identity_service,
-    models::{alias::AliasObjectClass, enums::AuditOutcome, policy::AuthzRequest},
+    models::{
+        alias::AliasObjectClass,
+        enums::{AuditOutcome, CredentialKind},
+        policy::AuthzRequest,
+    },
     state::{AppState, GrpcRuntimeStatus},
 };
 
@@ -101,6 +105,8 @@ impl AuthzService for AtomAuthz {
         let tenant_id = access::authz_request_tenant_id(&self.state.pool, &authz_req)
             .await
             .map_err(Status::from)?;
+        // The caller's token ceiling caps its right to invoke check; enforced
+        // inside the gate via AuthContext.
         access::require_authz_check_access(
             &self.state.pool,
             &auth,
@@ -110,9 +116,15 @@ impl AuthzService for AtomAuthz {
         .await
         .map_err(Status::from)?;
 
-        let resp = engine::evaluate(&self.state.pool, &authz_req)
-            .await
-            .map_err(Status::from)?;
+        // Self-check via a scoped token returns the token-limited answer; a
+        // delegated check about another subject is unaffected (ceiling_for → None).
+        let resp = engine::evaluate(
+            &self.state.pool,
+            &authz_req,
+            auth.ceiling_for(authz_req.subject_id),
+        )
+        .await
+        .map_err(Status::from)?;
         let (target_kind, target_id) = authz_request_target(&authz_req);
         audit::write_hot_path(
             &self.state.pool,
@@ -196,12 +208,9 @@ impl AuthService for AtomAuth {
         let auth = auth_context_from_metadata(&self.state, request.metadata()).await?;
         let req = request.into_inner();
 
-        let kind = req.kind.trim();
-        if !(kind.is_empty() || kind.eq_ignore_ascii_case("password")) {
-            return Err(Status::invalid_argument(
-                "unsupported credential kind: expected password",
-            ));
-        }
+        let credential_kind = parse_credential_auth_kind(&req.kind).ok_or_else(|| {
+            Status::invalid_argument("unsupported credential kind: expected password or shared_key")
+        })?;
 
         let requested_tenant_id =
             parse_optional_uuid(&req.tenant_id, "tenant_id").map_err(Status::from)?;
@@ -214,14 +223,15 @@ impl AuthService for AtomAuth {
         .await
         .map_err(Status::from)?;
 
-        require_credential_auth_access(&self.state.pool, auth.entity_id, tenant_id).await?;
+        require_credential_auth_access(&self.state.pool, &auth, tenant_id).await?;
 
-        let result = identity_service::authenticate_password_credential_in_tenant(
+        let result = identity_service::authenticate_credential_in_tenant(
             &self.state.pool,
             &self.state.config,
             &req.identifier,
             &req.secret,
             tenant_id,
+            credential_kind,
         )
         .await;
 
@@ -232,6 +242,7 @@ impl AuthService for AtomAuth {
         };
         let entity_id = result.as_ref().ok().map(|auth| auth.entity_id);
         let credential_id = result.as_ref().ok().map(|auth| auth.credential_id);
+        let credential_kind = result.as_ref().ok().map(|auth| auth.kind);
         audit::write_hot_path(
             &self.state.pool,
             self.state.config.audit_policy,
@@ -245,7 +256,7 @@ impl AuthService for AtomAuth {
                 outcome,
                 details: serde_json::json!({
                     "entity_id": entity_id,
-                    "credential_kind": "password",
+                    "credential_kind": credential_kind,
                     "identifier": req.identifier,
                     "transport": "grpc",
                 }),
@@ -267,13 +278,13 @@ impl AuthService for AtomAuth {
 
 async fn require_credential_auth_access(
     pool: &sqlx::PgPool,
-    caller_id: Uuid,
+    auth: &AuthContext,
     tenant_id: Option<Uuid>,
 ) -> Result<(), Status> {
     match tenant_id {
         Some(tenant_id) => require_any_capability(
             pool,
-            caller_id,
+            auth,
             &[
                 ("authz.check", Scope::Tenant(tenant_id)),
                 ("authz.check", Scope::Platform),
@@ -281,7 +292,7 @@ async fn require_credential_auth_access(
         )
         .await
         .map_err(Status::from),
-        None => require_any_capability(pool, caller_id, &[("authz.check", Scope::Platform)])
+        None => require_any_capability(pool, auth, &[("authz.check", Scope::Platform)])
             .await
             .map_err(Status::from),
     }
@@ -310,7 +321,7 @@ impl CertificateService for AtomCertificates {
         .map_err(Status::from)?;
         require_any_capability(
             &self.state.pool,
-            auth.entity_id,
+            &auth,
             &[
                 ("authz.check", scope_for_tenant(identity.tenant_id)),
                 ("authz.check", Scope::Platform),
@@ -343,7 +354,7 @@ impl CertificateService for AtomCertificates {
             .map_err(Status::from)?;
         require_any_capability(
             &self.state.pool,
-            auth.entity_id,
+            &auth,
             &[
                 ("manage", Scope::Object(entity_id)),
                 ("manage", scope_for_tenant(tenant_id)),
@@ -438,6 +449,14 @@ fn parse_alias_object_class(value: &str) -> Option<AliasObjectClass> {
         Some(AliasObjectClass::Resource)
     } else {
         None
+    }
+}
+
+fn parse_credential_auth_kind(value: &str) -> Option<CredentialKind> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" | "password" => Some(CredentialKind::Password),
+        "shared_key" => Some(CredentialKind::SharedKey),
+        _ => None,
     }
 }
 

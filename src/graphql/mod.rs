@@ -45,6 +45,8 @@ pub async fn graphql_handler(
             }
             match authenticate_token(&state, token).await {
                 Ok(auth) => {
+                    // The access-token ceiling rides inside AuthContext and is
+                    // enforced explicitly by each gate; no request wrapper needed.
                     req = req.data(auth);
                 }
                 Err(err) => return graphql_error(err.to_string()),
